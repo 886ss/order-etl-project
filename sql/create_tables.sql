@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS dwd_orders (
     quantity        INTEGER         NOT NULL,
     invoice_date    TIMESTAMP       NOT NULL,
     unit_price      NUMERIC(10, 4)  NOT NULL,
-    customer_id     VARCHAR(50),
+    customer_id     VARCHAR(50)     NOT NULL,
     country         VARCHAR(100)    NOT NULL,
     order_amount    NUMERIC(12, 4)  NOT NULL,
     etl_time        TIMESTAMP       NOT NULL DEFAULT NOW()
@@ -61,3 +61,11 @@ CREATE TABLE IF NOT EXISTS etl_task_logs (
 );
 
 COMMENT ON TABLE etl_task_logs IS 'ETL任务执行日志';
+
+-- ============================================================
+-- 查询性能索引
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_ods_invoice_date ON ods_orders(invoice_date);
+CREATE INDEX IF NOT EXISTS idx_dwd_invoice_date ON dwd_orders(invoice_date);
+CREATE INDEX IF NOT EXISTS idx_dwd_customer_id  ON dwd_orders(customer_id);
+CREATE INDEX IF NOT EXISTS idx_dwd_invoice_no   ON dwd_orders(invoice_no);

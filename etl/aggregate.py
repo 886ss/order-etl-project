@@ -10,10 +10,26 @@ Step 4: DWD → DWS，按日汇总销售主题指标。
 - daily_avg_order_amount 日均客单价
 """
 
+import logging
 from datetime import datetime
 import pandas as pd
-from sqlalchemy import text
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from etl.db import get_engine
+
+logger = logging.getLogger(__name__)
+
+# 模块级表定义 — 避免每次调用 autoload 查询 information_schema
+_dws_table = sa.Table(
+    "dws_sales_daily",
+    sa.MetaData(),
+    sa.Column("stat_date", sa.Date, primary_key=True),
+    sa.Column("daily_order_count", sa.Integer, nullable=False),
+    sa.Column("daily_customer_count", sa.Integer, nullable=False),
+    sa.Column("daily_sales_amount", sa.Numeric(14, 4), nullable=False),
+    sa.Column("daily_avg_order_amount", sa.Numeric(12, 4), nullable=False),
+    sa.Column("etl_time", sa.DateTime, nullable=False),
+)
 
 
 def load_dwd_data(engine) -> pd.DataFrame:
@@ -27,7 +43,7 @@ def load_dwd_data(engine) -> pd.DataFrame:
         FROM dwd_orders
     """
     df = pd.read_sql(query, engine)
-    print(f"[aggregate] 从 DWD 读取: {len(df)} 行")
+    logger.info("从 DWD 读取: %d 行", len(df))
     return df
 
 
@@ -56,7 +72,7 @@ def aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     daily["daily_sales_amount"] = daily["daily_sales_amount"].round(4)
     daily["daily_avg_order_amount"] = daily["daily_avg_order_amount"].round(4)
 
-    print(f"[aggregate] 聚合完成: {len(daily)} 个日期")
+    logger.info("聚合完成: %d 个日期", len(daily))
     return daily
 
 
@@ -64,37 +80,35 @@ def load_to_dws(df: pd.DataFrame) -> int:
     """
     将汇总数据写入 DWS 层表 dws_sales_daily
 
-    使用 UPSERT 策略：新日期插入，已存在则更新。
+    使用 SQLAlchemy 批量 UPSERT (INSERT ON CONFLICT DO UPDATE)，
+    单条 SQL 完成所有行的写入，避免 N+1 查询。
     """
     engine = get_engine()
-    rows_upserted = 0
+
+    # 使用模块级缓存的表定义，避免每次 autoload 查询 information_schema
+    table = _dws_table
+
+    records = df.to_dict("records")
+    if not records:
+        return 0
+
+    stmt = pg_insert(table).values(records)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["stat_date"],
+        set_={
+            "daily_order_count": stmt.excluded.daily_order_count,
+            "daily_customer_count": stmt.excluded.daily_customer_count,
+            "daily_sales_amount": stmt.excluded.daily_sales_amount,
+            "daily_avg_order_amount": stmt.excluded.daily_avg_order_amount,
+            "etl_time": sa.text("NOW()"),
+        },
+    )
 
     with engine.begin() as conn:
-        for _, row in df.iterrows():
-            upsert_sql = """
-                INSERT INTO dws_sales_daily
-                    (stat_date, daily_order_count, daily_customer_count,
-                     daily_sales_amount, daily_avg_order_amount, etl_time)
-                VALUES (:sd, :doc, :dcc, :dsa, :daoa, NOW())
-                ON CONFLICT (stat_date)
-                DO UPDATE SET
-                    daily_order_count      = EXCLUDED.daily_order_count,
-                    daily_customer_count   = EXCLUDED.daily_customer_count,
-                    daily_sales_amount     = EXCLUDED.daily_sales_amount,
-                    daily_avg_order_amount = EXCLUDED.daily_avg_order_amount,
-                    etl_time               = NOW()
-            """
-            conn.execute(text(upsert_sql), {
-                "sd": row["stat_date"],
-                "doc": int(row["daily_order_count"]),
-                "dcc": int(row["daily_customer_count"]),
-                "dsa": float(row["daily_sales_amount"]),
-                "daoa": float(row["daily_avg_order_amount"]),
-            })
-            rows_upserted += 1
+        conn.execute(stmt)
 
-    print(f"[aggregate] DWS 写入完成: {rows_upserted} 行")
-    return rows_upserted
+    logger.info("DWS 批量写入完成: %d 行", len(records))
+    return len(records)
 
 
 def run_aggregate() -> dict:

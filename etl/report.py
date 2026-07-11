@@ -9,10 +9,13 @@ Step 5: 从 DWS 层读取汇总数据，生成每日运营日报。
 """
 
 import os
+import logging
 from datetime import datetime
 import pandas as pd
 from sqlalchemy import text
 from etl.db import get_engine
+
+logger = logging.getLogger(__name__)
 
 
 def load_dws_data(engine) -> pd.DataFrame:
@@ -28,7 +31,7 @@ def load_dws_data(engine) -> pd.DataFrame:
         ORDER BY stat_date DESC
     """
     df = pd.read_sql(query, engine)
-    print(f"[report] 从 DWS 读取: {len(df)} 行")
+    logger.info("从 DWS 读取: %d 行", len(df))
     return df
 
 
@@ -79,15 +82,15 @@ def save_report(df: pd.DataFrame, summary: dict, output_dir: str = "reports") ->
     today = datetime.now().strftime("%Y%m%d")
     report_path = os.path.join(output_dir, f"daily_report_{today}.csv")
 
-    # 写入日报（含表头注释行）
+    # 注释头 + CSV 数据，单次文件打开避免重复 I/O
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(f"# 订单数据日报 — 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         for key, val in summary.items():
             f.write(f"# {key}: {val}\n")
         f.write("#\n")
-        df.to_csv(f, index=False, encoding="utf-8")
+        df.to_csv(f, index=False)
 
-    print(f"[report] 日报已保存: {report_path}")
+    logger.info("日报已保存: %s", report_path)
     return report_path
 
 

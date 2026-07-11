@@ -6,7 +6,11 @@
 
 import os
 import urllib.request
+import shutil
 import zipfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Online Retail Dataset URL (UCI)
 DATASET_URL = (
@@ -25,45 +29,57 @@ def download_dataset():
     zip_path = os.path.join(OUTPUT_DIR, "online_retail.zip")
 
     if os.path.exists(OUTPUT_FILE):
-        print(f"数据集已存在: {OUTPUT_FILE}")
+        logger.info("数据集已存在: %s", OUTPUT_FILE)
         return
 
-    print(f"正在下载数据集...")
-    print(f"URL: {DATASET_URL}")
+    logger.info("正在下载数据集: %s", DATASET_URL)
 
     try:
-        urllib.request.urlretrieve(DATASET_URL, zip_path)
-        print(f"下载完成: {zip_path}")
+        # 使用 urlopen + copyfileobj 替代已废弃的 urlretrieve
+        with urllib.request.urlopen(DATASET_URL) as response, \
+             open(zip_path, "wb") as out:
+            shutil.copyfileobj(response, out)
+        logger.info("下载完成: %s", zip_path)
 
-        # 解压
+        # 解压并查找数据文件（优先 .xlsx，其次 .csv）
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(OUTPUT_DIR)
-        print(f"解压完成: {OUTPUT_DIR}")
+        logger.info("解压完成: %s", OUTPUT_DIR)
 
-        # 重命名 CSV（UCI 解压后文件名可能不同）
-        for fname in os.listdir(OUTPUT_DIR):
-            if fname.endswith(".xlsx"):
-                import pandas as pd
+        # 查找并转换数据文件
+        extracted_files = os.listdir(OUTPUT_DIR)
+        xlsx_files = [f for f in extracted_files if f.endswith(".xlsx")]
+        csv_files = [f for f in extracted_files if f.endswith(".csv")]
+
+        if xlsx_files:
+            import pandas as pd
+            for fname in xlsx_files:
                 xlsx_path = os.path.join(OUTPUT_DIR, fname)
                 df = pd.read_excel(xlsx_path)
                 df.to_csv(OUTPUT_FILE, index=False)
-                print(f"已转换: {fname} → {OUTPUT_FILE}")
-                break
+                logger.info("已转换: %s → %s (%d 行)", fname, OUTPUT_FILE, len(df))
+        elif csv_files:
+            # 如果是 CSV，直接重命名第一个
+            src = os.path.join(OUTPUT_DIR, csv_files[0])
+            os.rename(src, OUTPUT_FILE)
+            logger.info("已移动: %s → %s", csv_files[0], OUTPUT_FILE)
+        else:
+            logger.warning("解压后未找到 .xlsx 或 .csv 文件")
 
-        # 清理 zip
-        os.remove(zip_path)
-        print("完成！数据集就绪。")
+        logger.info("数据集就绪！")
 
     except Exception as e:
-        print(f"下载失败: {e}")
-        print()
-        print("请手动下载数据集：")
-        print(
-            "1. 访问 https://archive.ics.uci.edu/dataset/352/online+retail"
-        )
-        print(f"2. 下载 Online Retail.xlsx")
-        print(f"3. 保存为 {OUTPUT_FILE}")
+        logger.error("下载失败: %s", e)
+        logger.info("请手动下载数据集：")
+        logger.info("1. 访问 https://archive.ics.uci.edu/dataset/352/online+retail")
+        logger.info("2. 下载 Online Retail.xlsx")
+        logger.info("3. 保存为 %s", OUTPUT_FILE)
+    finally:
+        # 清理残留 zip 文件
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     download_dataset()

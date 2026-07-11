@@ -13,16 +13,18 @@ Step 3: ODS → DWD，完成数据清洗与明细加工。
 """
 
 from datetime import datetime
+import logging
 import pandas as pd
-from sqlalchemy import text
-from etl.db import get_engine
+from etl.db import get_engine, text, DWD_DTYPE, truncate_and_load
+
+logger = logging.getLogger(__name__)
 
 
 def load_ods_data(engine) -> pd.DataFrame:
     """从 ODS 层读取全量数据"""
     query = "SELECT * FROM ods_orders"
     df = pd.read_sql(query, engine)
-    print(f"[transform] 从 ODS 读取: {len(df)} 行")
+    logger.info("从 ODS 读取: %d 行", len(df))
     return df
 
 
@@ -44,22 +46,22 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     cancel_mask = df["invoice_no"].str.startswith("C", na=False)
     cancel_count = cancel_mask.sum()
     df = df[~cancel_mask]
-    print(f"[transform] 过滤取消订单: {cancel_count} 行")
+    logger.info("过滤取消订单: %d 行", cancel_count)
 
     # 2. 去除 CustomerID 为空
     null_cust = df["customer_id"].isna().sum()
     df = df.dropna(subset=["customer_id"])
-    print(f"[transform] 去除空客户ID: {null_cust} 行")
+    logger.info("去除空客户ID: %d 行", null_cust)
 
     # 3. 去除 Quantity ≤ 0
     neg_qty = (df["quantity"] <= 0).sum()
     df = df[df["quantity"] > 0]
-    print(f"[transform] 去除非正数量: {neg_qty} 行")
+    logger.info("去除非正数量: %d 行", neg_qty)
 
     # 4. 去除 UnitPrice ≤ 0
     neg_price = (df["unit_price"] <= 0).sum()
     df = df[df["unit_price"] > 0]
-    print(f"[transform] 去除非正单价: {neg_price} 行")
+    logger.info("去除非正单价: %d 行", neg_price)
 
     # 5. 计算订单金额
     df["order_amount"] = df["quantity"] * df["unit_price"]
@@ -69,9 +71,10 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
     cleaned_count = len(df)
     removed = original_count - cleaned_count
-    print(
-        f"[transform] 清洗完成: {original_count} → {cleaned_count} 行 "
-        f"(剔除 {removed} 行, {removed/original_count*100:.1f}%)"
+    logger.info(
+        "清洗完成: %d → %d 行 (剔除 %d 行, %.1f%%)",
+        original_count, cleaned_count, removed,
+        removed / original_count * 100 if original_count else 0,
     )
 
     return df
@@ -81,15 +84,14 @@ def load_to_dwd(df: pd.DataFrame) -> int:
     """
     将清洗后数据写入 DWD 层表 dwd_orders
 
+    TRUNCATE 和 INSERT 在同一事务中执行，保证原子性。
+
     Args:
         df: 清洗后的 DataFrame
 
     Returns:
         写入行数
     """
-    engine = get_engine()
-
-    # 只保留 DWD 表需要的列
     dwd_columns = [
         "invoice_no", "stock_code", "description", "quantity",
         "invoice_date", "unit_price", "customer_id", "country",
@@ -97,14 +99,9 @@ def load_to_dwd(df: pd.DataFrame) -> int:
     ]
     df_dwd = df[dwd_columns]
 
-    # 清空 DWD 表后写入（全量同步）
-    with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE dwd_orders RESTART IDENTITY"))
-        print("[transform] DWD 表已清空")
-
-    df_dwd.to_sql("dwd_orders", engine, if_exists="append", index=False)
-    print(f"[transform] DWD 写入完成: {len(df_dwd)} 行")
-    return len(df_dwd)
+    count = truncate_and_load("dwd_orders", df_dwd, DWD_DTYPE)
+    logger.info("DWD 写入完成: %d 行", count)
+    return count
 
 
 def run_transform() -> dict:

@@ -5,9 +5,19 @@ ETL 任务日志工具
 写入 etl_task_logs 表，便于监控和排查。
 """
 
+import logging
 from datetime import datetime
 from sqlalchemy import text
 from etl.db import get_engine
+
+logger = logging.getLogger(__name__)
+
+_MAX_ERROR_LENGTH = 1000
+
+
+def _safe_truncate(text: str, max_len: int = _MAX_ERROR_LENGTH) -> str:
+    """安全截断字符串。Python 3 字符串切片按 code point 操作，不会切断多字节字符。"""
+    return text[:max_len]
 
 
 def log_task_start(task_name: str) -> int:
@@ -79,7 +89,7 @@ def log_task_failure(log_id: int, error_message: str, start_time: datetime) -> N
             {
                 "end_time": end_time,
                 "duration": duration,
-                "error": error_message[:1000],  # 截断过长错误信息
+                "error": _safe_truncate(error_message),
                 "id": log_id,
             },
         )

@@ -5,10 +5,12 @@ Step 1: 从 CSV 文件读取订单数据，写入 ODS 层。
 """
 
 import os
+import logging
 import pandas as pd
 from datetime import datetime
-from sqlalchemy import text
-from etl.db import get_engine
+from etl.db import get_engine, text, ODS_DTYPE, truncate_and_load
+
+logger = logging.getLogger(__name__)
 
 # 预期 CSV 列名与数据库列名映射
 COLUMN_MAPPING = {
@@ -27,26 +29,41 @@ def read_csv_data(file_path: str) -> pd.DataFrame:
     """
     读取 CSV 订单数据文件
 
+    自动尝试多种编码，兼容不同来源的 CSV 文件。
+    UCI Online Retail 数据集实际编码为 Latin-1/ISO-8859-1。
+
     Args:
         file_path: CSV 文件路径
 
     Returns:
         pandas DataFrame
+
+    Raises:
+        FileNotFoundError: 文件不存在
+        ValueError: 所有已知编码均无法读取
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"数据文件不存在: {file_path}")
 
-    df = pd.read_csv(
-        file_path,
-        encoding="utf-8",
-        dtype={
-            "InvoiceNo": str,
-            "StockCode": str,
-            "CustomerID": str,
-        },
-    )
-    print(f"[extract] 读取数据: {len(df)} 行, {len(df.columns)} 列")
-    return df
+    # cp1252 先于 latin-1：cp1252 是 latin-1 的超集，能正确解码欧元符号等字符
+    # latin-1 兜底：可解码任意字节序列，永远不会抛 UnicodeDecodeError
+    for enc in ["utf-8", "cp1252", "latin-1"]:
+        try:
+            df = pd.read_csv(
+                file_path,
+                encoding=enc,
+                dtype={
+                    "InvoiceNo": str,
+                    "StockCode": str,
+                    "CustomerID": str,
+                },
+            )
+            logger.info("使用编码 %s 读取: %d 行", enc, len(df))
+            return df
+        except UnicodeDecodeError:
+            continue
+
+    raise ValueError(f"无法以任何已知编码读取文件: {file_path}")
 
 
 def validate_columns(df: pd.DataFrame) -> bool:
@@ -62,7 +79,7 @@ def validate_columns(df: pd.DataFrame) -> bool:
     missing = set(COLUMN_MAPPING.keys()) - set(df.columns)
     if missing:
         raise ValueError(f"CSV 缺少列: {missing}")
-    print("[extract] 列校验通过 ✓")
+    logger.info("列校验通过")
     return True
 
 
@@ -70,28 +87,21 @@ def load_to_ods(df: pd.DataFrame) -> int:
     """
     将原始数据写入 ODS 层表 ods_orders
 
+    TRUNCATE 和 INSERT 在同一事务中执行，确保原子性：
+    写入失败时 ODS 表不会被清空。
+
     Args:
         df: 原始数据 DataFrame
 
     Returns:
         写入行数
     """
-    engine = get_engine()
-
-    # 重命名列以匹配数据库
     df_db = df.rename(columns=COLUMN_MAPPING)
-
-    # 转换日期格式
     df_db["invoice_date"] = pd.to_datetime(df_db["invoice_date"])
 
-    # 清空 ODS 表后写入（全量同步模式）
-    with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE ods_orders RESTART IDENTITY"))
-        print("[extract] ODS 表已清空")
-
-    df_db.to_sql("ods_orders", engine, if_exists="append", index=False)
-    print(f"[extract] ODS 写入完成: {len(df_db)} 行")
-    return len(df_db)
+    count = truncate_and_load("ods_orders", df_db, ODS_DTYPE)
+    logger.info("ODS 写入完成: %d 行", count)
+    return count
 
 
 def run_extract(file_path: str) -> dict:

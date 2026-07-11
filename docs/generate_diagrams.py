@@ -11,11 +11,32 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.font_manager as fm
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 import numpy as np
 
+def _detect_chinese_font() -> list:
+    """
+    检测系统中可用的中文字体，返回优先级列表。
+
+    跨平台兼容：Windows / macOS / Linux。
+    """
+    available = {f.name for f in fm.fontManager.ttflist}
+    candidates = [
+        "SimHei",            # Windows
+        "Microsoft YaHei",   # Windows
+        "PingFang SC",       # macOS
+        "Heiti SC",          # macOS
+        "Noto Sans CJK SC",  # Linux
+        "WenQuanYi Micro Hei",  # Linux
+        "DejaVu Sans",       # fallback (no CJK)
+    ]
+    detected = [f for f in candidates if f in available]
+    return detected if detected else ["sans-serif"]
+
+
 plt.rcParams["font.family"] = "sans-serif"
-plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
+plt.rcParams["font.sans-serif"] = _detect_chinese_font()
 plt.rcParams["axes.unicode_minus"] = False
 
 

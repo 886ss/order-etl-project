@@ -5,28 +5,33 @@ Step 2: 对 ODS 层数据进行质量检查。
 检查项：空值、重复值、异常金额、取消订单标记。
 """
 
+import logging
 from datetime import datetime
 from sqlalchemy import text
 from etl.db import get_engine
+
+logger = logging.getLogger(__name__)
 
 
 def check_null_values(engine) -> dict:
     """
     检查关键字段空值情况
 
+    使用 CASE WHEN 而非 FILTER 子句，兼容 PostgreSQL 和 SQLite。
+
     Returns:
         各字段空值计数
     """
     query = """
         SELECT
-            COUNT(*)                                              AS total_rows,
-            COUNT(*) FILTER (WHERE invoice_no IS NULL)            AS null_invoice_no,
-            COUNT(*) FILTER (WHERE stock_code IS NULL)            AS null_stock_code,
-            COUNT(*) FILTER (WHERE quantity IS NULL)              AS null_quantity,
-            COUNT(*) FILTER (WHERE invoice_date IS NULL)          AS null_invoice_date,
-            COUNT(*) FILTER (WHERE unit_price IS NULL)            AS null_unit_price,
-            COUNT(*) FILTER (WHERE customer_id IS NULL)           AS null_customer_id,
-            COUNT(*) FILTER (WHERE country IS NULL)               AS null_country
+            COUNT(*)                                                       AS total_rows,
+            SUM(CASE WHEN invoice_no IS NULL THEN 1 ELSE 0 END)            AS null_invoice_no,
+            SUM(CASE WHEN stock_code IS NULL THEN 1 ELSE 0 END)            AS null_stock_code,
+            SUM(CASE WHEN quantity IS NULL THEN 1 ELSE 0 END)              AS null_quantity,
+            SUM(CASE WHEN invoice_date IS NULL THEN 1 ELSE 0 END)          AS null_invoice_date,
+            SUM(CASE WHEN unit_price IS NULL THEN 1 ELSE 0 END)            AS null_unit_price,
+            SUM(CASE WHEN customer_id IS NULL THEN 1 ELSE 0 END)           AS null_customer_id,
+            SUM(CASE WHEN country IS NULL THEN 1 ELSE 0 END)               AS null_country
         FROM ods_orders
     """
     with engine.connect() as conn:
@@ -62,10 +67,10 @@ def check_abnormal_amounts(engine) -> dict:
     """
     query = """
         SELECT
-            COUNT(*) FILTER (WHERE unit_price < 0)      AS negative_price_count,
-            COUNT(*) FILTER (WHERE quantity < 0)        AS negative_quantity_count,
-            COUNT(*) FILTER (WHERE unit_price = 0)      AS zero_price_count,
-            COUNT(*) FILTER (WHERE quantity = 0)        AS zero_quantity_count
+            SUM(CASE WHEN unit_price < 0 THEN 1 ELSE 0 END)      AS negative_price_count,
+            SUM(CASE WHEN quantity < 0 THEN 1 ELSE 0 END)        AS negative_quantity_count,
+            SUM(CASE WHEN unit_price = 0 THEN 1 ELSE 0 END)      AS zero_price_count,
+            SUM(CASE WHEN quantity = 0 THEN 1 ELSE 0 END)        AS zero_quantity_count
         FROM ods_orders
     """
     with engine.connect() as conn:
@@ -106,10 +111,10 @@ def run_quality_check() -> dict:
             "duration": (datetime.now() - start).total_seconds(),
         }
 
-        print(f"[quality] 空值检查: {null_info}")
-        print(f"[quality] 重复检查: {dup_info}")
-        print(f"[quality] 异常值检查: {abnormal_info}")
-        print(f"[quality] 质量检查结果: {status}")
+        logger.info("空值检查: %s", null_info)
+        logger.info("重复检查: %s", dup_info)
+        logger.info("异常值检查: %s", abnormal_info)
+        logger.info("质量检查结果: %s", status)
 
         return report
 
