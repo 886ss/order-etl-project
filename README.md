@@ -1,60 +1,65 @@
-# Order Data Warehouse ETL Project
-## 订单数据数仓ETL项目
+# Order Data Warehouse ETL
+
+## 订单数据数仓 ETL 项目
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791)
 ![Airflow](https://img.shields.io/badge/Airflow-2.5+-017CEE)
+![Tests](https://img.shields.io/badge/tests-21/21_passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
 
 ## 📋 项目背景
 
-本项目模拟电商平台订单分析场景，基于 **Airflow** 构建离线 ETL 调度流程，实现订单数据从抽取、清洗、转换到指标统计的全自动化处理。
+基于 **Apache Airflow + PostgreSQL + Pandas** 构建的订单数据离线 ETL 流水线。采用经典 **ODS → DWD → DWS** 数仓分层架构，覆盖从数据抽取、质量检查、清洗转换、指标聚合到日报生成的完整链路。
 
-采用经典的 **ODS → DWD → DWS** 数仓分层架构，基于 **PostgreSQL** 存储业务数据及任务日志，支持任务依赖管理、失败重试与执行监控。
+**数据来源**：[UCI Online Retail Dataset](https://archive.ics.uci.edu/dataset/352/online+retail)（~54 万行英国电商交易记录）
 
-> 🎯 定位：本科数据开发/大数据开发/数仓开发实习生求职展示项目
+> 🎯 定位：本科数据开发 / 大数据开发 / 数仓开发实习生求职展示项目
 >
-> 📖 **面试准备**：👉 [面试准备指南 (INTERVIEW_GUIDE.md)](docs/INTERVIEW_GUIDE.md) — 含 20 个高频面试问题 + STAR 话术
+> 📖 **面试准备**：→ [面试准备指南 (docs/INTERVIEW_GUIDE.md)](docs/INTERVIEW_GUIDE.md) — 20 个高频面试问题 + STAR 话术
 
 ---
 
 ## 🛠️ 技术栈
 
-| 类别 | 技术 |
-|------|------|
-| 语言 | Python 3.9+ |
-| 数据库 | PostgreSQL |
-| 调度 | Apache Airflow 2.5+ |
-| 数据处理 | Pandas, NumPy |
-| ORM | SQLAlchemy |
-| 可视化 | Matplotlib |
+| 类别 | 技术 | 说明 |
+|------|------|------|
+| 语言 | Python 3.9+ | — |
+| 数据库 | PostgreSQL | 业务表 + 任务日志表 |
+| 调度 | Apache Airflow 2.5+ | DAG 编排、失败重试、日志监控 |
+| 数据处理 | Pandas, NumPy | DataFrame 清洗聚合 |
+| ORM / SQL | SQLAlchemy 2.0+ | Engine 单例 + 连接池 + 批量 UPSERT |
+| 可视化 | Matplotlib | 架构图 / 数仓分层图 / DAG 流程图 |
+| 日志 | Python logging | 统一替换 print，兼容 Airflow 日志系统 |
+| 测试 | pytest 9.x | 21 项单元测试，SQLite 内存库快速验证 |
 
 ---
 
 ## 🏗️ 项目架构
 
 ```
-                    ┌──────────────────────────┐
-                    │    Apache Airflow 调度     │
-                    │  daily_order_pipeline     │
-                    └──────────┬───────────────┘
-                               │
-    ┌──────────────────────────┼──────────────────────────┐
-    │                          │                          │
-    ▼                          ▼                          ▼
-┌─────────┐   extract   ┌─────────┐   aggregate   ┌─────────┐
-│  ODS 层  │ ──────────► │  DWD 层  │ ────────────► │  DWS 层  │
-│ ods_orders│  transform  │dwd_orders│               │dws_sales │
-└─────────┘             └─────────┘               │ _daily   │
-     ▲                                              └────┬────┘
-     │                                                   │
-     │                                                   ▼
-┌─────────┐                                       ┌─────────┐
-│   CSV    │                                       │  日报输出 │
-│ 订单数据  │                                       │  .csv    │
-└─────────┘                                       └─────────┘
+                  ┌──────────────────────────┐
+                  │   Apache Airflow 调度层    │
+                  │  daily_order_pipeline     │
+                  │  每日 2:00 · 重试3次       │
+                  └──────────┬───────────────┘
+                             │
+  ┌──────────────────────────┼──────────────────────────┐
+  │                          │                          │
+  ▼                          ▼                          ▼
+┌─────────┐  extract   ┌─────────┐  aggregate   ┌─────────┐
+│ ODS 层   │ ────────► │ DWD 层   │ ───────────► │ DWS 层   │
+│ods_orders│ transform  │dwd_orders│              │dws_sales │
+│ ~54万行  │            │ 清洗明细  │              │ _daily   │
+└────┬────┘            └─────────┘              └────┬────┘
+     │                                               │
+     ▼                                               ▼
+┌─────────┐                                     ┌─────────┐
+│ CSV 文件 │                                     │ 日报输出 │
+│Latin-1  │                                     │ .csv    │
+└─────────┘                                     └─────────┘
 ```
 
 ---
@@ -62,86 +67,111 @@
 ## 📊 数仓分层设计
 
 ### ODS 层 — `ods_orders`
-| 职责 | 保存原始订单数据镜像 |
-|------|---------------------|
-| 原则 | 不做任何业务处理，与源数据保持一致 |
+
+| 项目 | 说明 |
+|------|------|
+| 职责 | 原始订单数据镜像，不做业务处理 |
+| 写入策略 | TRUNCATE + INSERT 原子事务，写入失败自动回滚 |
+| 编码处理 | utf-8 → cp1252 → latin-1 自动回落，兼容多种 CSV 来源 |
 
 ### DWD 层 — `dwd_orders`
-| 处理 | 说明 |
-|------|------|
-| 空值处理 | 剔除 CustomerID 为空的记录 |
-| 异常值 | 剔除 Quantity ≤ 0、UnitPrice ≤ 0 |
-| 订单去重 | 过滤取消订单（InvoiceNo 以 'C' 开头） |
-| 金额计算 | `order_amount = Quantity × UnitPrice` |
-| 时间戳 | 添加 `etl_time` 记录处理时间 |
+
+| 处理步骤 | 说明 |
+|----------|------|
+| 过滤取消订单 | `InvoiceNo` 以 'C' 开头标记为取消/退货 |
+| 空值处理 | 剔除 `CustomerID` 为空的记录（无主订单） |
+| 异常数量 | 剔除 `Quantity ≤ 0` 的行 |
+| 异常单价 | 剔除 `UnitPrice ≤ 0` 的行 |
+| 金额计算 | `order_amount = Quantity × UnitPrice`，显式 NUMERIC(12,4) |
+| 时间戳 | 添加 `etl_time` 记录 ETL 处理时间 |
 
 ### DWS 层 — `dws_sales_daily`
-| 指标 | 说明 |
-|------|------|
-| `daily_order_count` | 日订单数（去重） |
-| `daily_customer_count` | 日客户数（去重） |
-| `daily_sales_amount` | 日销售额 |
-| `daily_avg_order_amount` | 客单价（销售额／订单数） |
+
+| 指标 | 计算方式 | 说明 |
+|------|---------|------|
+| `daily_order_count` | `nunique(invoice_no)` | 日去重订单数 |
+| `daily_customer_count` | `nunique(customer_id)` | 日去重客户数 |
+| `daily_sales_amount` | `sum(order_amount)` | 日销售额 |
+| `daily_avg_order_amount` | `sales / orders` | 客单价 |
+
+写入策略：SQLAlchemy 批量 `INSERT ON CONFLICT DO UPDATE`，单条 SQL 完成全量 UPSERT。
 
 ---
 
 ## 🔄 Airflow DAG 流程
 
 ```
-extract_orders       从 CSV 抽取 → ODS
+extract_orders       CSV → ODS（多编码自适应，TRUNCATE+INSERT 原子事务）
      │
      ▼
-check_quality         空值/重复/异常值检查
+check_quality        空值检查 / 重复检查 / 异常金额预警（CASE WHEN 兼容 PG+SQLite）
      │
      ▼
-build_dwd             清洗 + 去重 + 金额计算 → DWD
+build_dwd            清洗 + 去重 + 金额计算 → DWD（原子事务）
      │
      ▼
-build_dws             按日聚合指标 → DWS
+build_dws            按日聚合 4 项指标 → DWS（批量 UPSERT）
      │
      ▼
-generate_report        生成日报 CSV + 控制台输出
+generate_report      日报 CSV + 控制台输出
      │
      ▼
-   finish              流程结束
+   finish            EmptyOperator 流程结束
 ```
 
-**调度特性：**
-- 每日凌晨 2:00 自动执行（`0 2 * * *`）
-- 任务失败自动重试 3 次（间隔 5 分钟）
-- 每步自动记录执行日志到 `etl_task_logs`
+| 特性 | 配置 |
+|------|------|
+| 调度频率 | 每日凌晨 2:00 (`0 2 * * *`) |
+| 时区 | UTC（`datetime(2020, 1, 1, tzinfo=timezone.utc)`） |
+| 失败重试 | 3 次，间隔 5 分钟 |
+| 执行日志 | 自动写入 `etl_task_logs` 表，单次记录无重复 |
+| 日志方式 | Python `logging` 模块，兼容 Airflow 日志级别过滤 |
 
 ---
 
 ## 🗄️ 数据库表设计
 
-| 表名 | 层级 | 说明 |
-|------|------|------|
-| `ods_orders` | ODS | 原始订单数据镜像 |
-| `dwd_orders` | DWD | 清洗后订单明细 |
-| `dws_sales_daily` | DWS | 销售主题日度汇总 |
-| `etl_task_logs` | 日志 | ETL 任务执行日志 |
+| 表名 | 层级 | 行数（预估） | 说明 |
+|------|------|-------------|------|
+| `ods_orders` | ODS | ~540,000 | 原始订单数据镜像 |
+| `dwd_orders` | DWD | ~400,000 | 清洗后订单明细，含 `order_amount` |
+| `dws_sales_daily` | DWS | ~400 | 按日聚合的 4 项销售指标 |
+| `etl_task_logs` | 日志 | 每任务 1 行 | ETL 步骤执行状态与耗时 |
+
+### 查询索引
+
+| 索引名 | 表 | 列 | 覆盖查询场景 |
+|--------|---|-----|-------------|
+| `idx_ods_invoice_date` | `ods_orders` | `invoice_date` | 按日期过滤 |
+| `idx_dwd_invoice_date` | `dwd_orders` | `invoice_date` | 按日期聚合 |
+| `idx_dwd_customer_id` | `dwd_orders` | `customer_id` | 按客户维度分析 |
+| `idx_dwd_invoice_no` | `dwd_orders` | `invoice_no` | 订单去重/关联查询 |
+
+### 约束保障
+
+- `dwd_orders.customer_id` 设为 `NOT NULL`，与清洗逻辑 `dropna(subset=["customer_id"])` 形成数据库层面的防御
+- `dws_sales_daily.stat_date` 设 `UNIQUE`，配合 `ON CONFLICT` UPSERT
 
 ---
 
-## 🚀 运行步骤
+## 🚀 快速开始
 
 ### 1. 环境准备
 
 ```bash
-# 克隆项目
-git clone <your-repo-url>
+git clone https://github.com/886ss/order-etl-project.git
 cd order-etl-project
 
-# 安装依赖
+# 安装依赖（开发环境建议用锁定版本）
 pip install -r requirements.txt
+# 或: pip install -r requirements-dev.txt
 
-# 安装 PostgreSQL 并创建数据库
+# 创建 PostgreSQL 数据库
 createdb order_warehouse
 
-# 配置数据库连接（可选，默认连接本地 PostgreSQL）
+# 配置环境变量（可选，默认连接 localhost:5432）
 cp .env.example .env
-# 编辑 .env 设置 PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD
+# 编辑 .env: PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD
 ```
 
 ### 2. 初始化表结构
@@ -154,26 +184,26 @@ psql -d order_warehouse -f sql/create_tables.sql
 
 ```bash
 python etl/download_data.py
+# 自动下载 UCI Online Retail Dataset → data/online_retail.csv
 ```
 
-### 4. 运行 ETL（独立模式）
+### 4. 独立模式运行 ETL（无需 Airflow）
 
 ```bash
-# 逐步骤运行
-python etl/extract.py data/online_retail.csv
-python etl/quality.py
-python etl/transform.py
-python etl/aggregate.py
-python etl/report.py
+python etl/extract.py     # Step 1: CSV → ODS
+python etl/quality.py     # Step 2: 数据质量检查
+python etl/transform.py   # Step 3: ODS → DWD
+python etl/aggregate.py   # Step 4: DWD → DWS
+python etl/report.py      # Step 5: 生成日报
 ```
 
-### 5. 启动 Airflow 调度
+### 5. Airflow 调度模式
 
 ```bash
-# 启动 Airflow Standalone
+# 方式A: Airflow Standalone（开箱即用）
 airflow standalone
 
-# 或复制 DAG 到 Airflow dags 目录
+# 方式B: 复制 DAG 到已有 Airflow 实例
 cp dags/daily_order_pipeline.py $AIRFLOW_HOME/dags/
 
 # 访问 http://localhost:8080 查看 DAG 运行状态
@@ -183,43 +213,49 @@ cp dags/daily_order_pipeline.py $AIRFLOW_HOME/dags/
 
 ```bash
 pytest tests/ -v
+# 21 passed — 覆盖 extract / quality / transform / aggregate / report
 ```
 
 ---
 
-## 📁 项目目录结构
+## 📁 项目结构
 
 ```
 order-etl-project/
-├── data/
-│   └── online_retail.csv          # 原始数据集（需下载）
-├── etl/
-│   ├── __init__.py
-│   ├── db.py                      # 数据库连接管理
-│   ├── extract.py                 # Step1: CSV → ODS
-│   ├── quality.py                 # Step2: 数据质量检查
-│   ├── transform.py               # Step3: ODS → DWD
-│   ├── aggregate.py               # Step4: DWD → DWS
-│   ├── report.py                  # Step5: 日报生成
-│   ├── logging_utils.py           # 任务日志工具
-│   └── download_data.py           # 数据集下载
+├── etl/                            # ETL 核心模块
+│   ├── db.py                       # 引擎单例 + 连接池 + 共享 ODS_DTYPE/DWD_DTYPE + truncate_and_load()
+│   ├── extract.py                  # Step1: CSV → ODS（多编码自适应 + 原子事务）
+│   ├── quality.py                  # Step2: 空值/重复/异常值检查（CASE WHEN 兼容 PG+SQLite）
+│   ├── transform.py                # Step3: ODS → DWD（清洗 + 金额计算 + 原子事务）
+│   ├── aggregate.py                # Step4: DWD → DWS（批量 UPSERT + 缓存的表定义）
+│   ├── report.py                   # Step5: 日报 CSV 生成
+│   ├── logging_utils.py            # 任务执行日志表记录（安全字符串截断）
+│   └── download_data.py            # UCI 数据集下载（urlopen + csv/xlsx 双支持）
 ├── dags/
-│   └── daily_order_pipeline.py    # Airflow DAG
+│   └── daily_order_pipeline.py     # Airflow DAG（通用 _execute_task 包装器，tz-aware）
 ├── sql/
-│   ├── create_tables.sql          # 建表脚本
-│   └── init_data.sql              # 初始化脚本
+│   ├── create_tables.sql           # 建表 + 索引 + COMMENT
+│   └── init_data.sql               # 初始化脚本
 ├── tests/
-│   ├── __init__.py
-│   ├── test_extract.py
-│   ├── test_quality.py
-│   ├── test_transform.py
-│   ├── test_aggregate.py
-│   └── test_report.py
-├── reports/                       # 日报输出目录
-├── docs/                          # 文档/架构图
-├── requirements.txt
-├── .env.example
-├── .gitignore
+│   ├── test_extract.py             # CSV 读取 + 列校验
+│   ├── test_quality.py             # 质量检查 SQL（SQLite 内存库）
+│   ├── test_transform.py           # 清洗逻辑 7 项测试
+│   ├── test_aggregate.py           # 聚合计算 3 项测试
+│   └── test_report.py              # 日报摘要 + 文件保存
+├── docs/
+│   ├── architecture.png            # 项目架构图
+│   ├── warehouse_design.png        # 数仓分层图
+│   ├── dag_flow.png                # DAG 流程图
+│   ├── generate_diagrams.py        # 架构图生成脚本（跨平台中文字体自动检测）
+│   └── INTERVIEW_GUIDE.md          # 面试准备指南
+├── data/                           # 数据集目录
+│   └── online_retail.csv           # （需下载）
+├── reports/                        # 日报输出目录
+│   └── daily_report_YYYYMMDD.csv
+├── requirements.txt                # 宽松约束（>=）
+├── requirements-dev.txt            # 精确锁定版本
+├── .env.example                    # 环境变量模板
+├── .gitignore                      # 排除 .env / __pycache__ / Airflow 运行时
 └── README.md
 ```
 
@@ -227,25 +263,42 @@ order-etl-project/
 
 ## ✨ 项目亮点
 
-1. **数仓分层思想**：ODS → DWD → DWS 三层架构，职责清晰，易于扩展
-2. **完整 ETL 流程**：抽取 → 清洗 → 转换 → 聚合 → 报表，每个环节可独立运行
-3. **Airflow 任务调度**：任务依赖管理、失败自动重试、执行日志监控
-4. **数据质量管理**：空值检测、重复检查、异常金额预警
-5. **PostgreSQL 实战**：CTAS/TRUNCATE/UPSERT 多种写入策略，日志表自动记录
-6. **21 项单元测试**：全模块 pytest 覆盖，支持 SQLite 内存库快速验证
+### 架构设计
+
+1. **数仓分层**：ODS → DWD → DWS 三层解耦，每层职责单一、可独立测试
+2. **原子写入**：TRUNCATE + INSERT 同事务执行，写入失败自动回滚，保护已有数据
+3. **单例连接池**：Engine 模块级单例 + pool_size/max_overflow/pool_recycle 配置，杜绝连接泄漏
+
+### 数据处理
+
+4. **多编码自适应**：CSV 读取自动 utf-8 → cp1252 → latin-1 回落，适配真实数据集
+5. **批量 UPSERT**：SQLAlchemy `pg_insert.on_conflict_do_update()` 替代逐行 iterrows，单条 SQL 完成
+6. **显式类型映射**：to_sql 使用共享 `ODS_DTYPE` / `DWD_DTYPE` 常量，防止 NUMERIC→FLOAT 精度丢失
+
+### 质量与测试
+
+7. **数据质量检查**：3 维度 SQL 检查（空值/重复/异常金额），`CASE WHEN` 语法兼容 PostgreSQL + SQLite
+8. **21 项单元测试**：extract(4) + quality(3) + transform(7) + aggregate(3) + report(4)，SQLite 内存库秒级验证
+9. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引，代码+库双保障
+
+### 工程实践
+
+10. **日志体系**：Python `logging` 模块替代 print，兼容 Airflow 日志级别过滤；`_safe_truncate()` 安全截断
+11. **DAG 代码精简**：通用 `_execute_task()` 包装器消除 5 个重复的任务函数；`EmptyOperator` + tz-aware start_date
+12. **跨平台兼容**：架构图生成脚本自动检测 Windows/macOS/Linux 中文环境字体
+13. **环境可复现**：`requirements-dev.txt` 精确锁版本；`.env.example` 模板；`.gitignore` 排除敏感文件
 
 ---
 
 ## 📝 简历描述（可直接使用）
 
-> **订单数据数仓ETL项目**
+> **订单数据数仓 ETL 项目** ｜ Python · PostgreSQL · Airflow · Pandas
 >
-> 技术栈：Python｜PostgreSQL｜Airflow｜Pandas
->
-> - 基于 Airflow 构建离线 ETL 调度流程，实现订单数据抽取、清洗、转换及指标统计自动化运行；
-> - 设计 ODS→DWD→DWS 数仓分层结构，完成订单明细加工与销售主题指标汇总；
-> - 基于 PostgreSQL 存储业务数据及任务日志，实现任务依赖管理、失败重试与执行监控；
-> - 构建日报自动生成功能，输出销售额、订单数、用户数及客单价等核心运营指标。
+> - 基于 Airflow 构建离线 ETL 调度流程，设计 ODS→DWD→DWS 三层数仓架构，实现订单数据从抽取到日报的全自动化处理；
+> - 使用 SQLAlchemy 批量 UPSERT 替代逐行插入，引入连接池单例与原子事务写入，保障数据安全与执行效率；
+> - 构建 3 维度数据质量检查体系（空值/重复/异常值），SQL 兼容 PostgreSQL 与 SQLite；
+> - 基于 PostgreSQL 实现 4 张业务表 + 4 个查询索引设计，配合 21 项 pytest 单元测试覆盖全链路；
+> - 统一 logging 日志体系，支持 Airflow 失败重试与任务执行日志自动记录。
 
 ---
 
