@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791)
 ![Airflow](https://img.shields.io/badge/Airflow-2.5+-017CEE)
-![Tests](https://img.shields.io/badge/tests-24/24_passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-33/33_passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -29,7 +29,8 @@
 | ORM / SQL | SQLAlchemy 2.0+ | Engine 单例 + 连接池 + 批量 UPSERT |
 | 可视化 | Matplotlib | 架构图 / 数仓分层图 / DAG 流程图 |
 | 日志 | Python logging | 统一替换 print，兼容 Airflow 日志系统 |
-| 测试 | pytest 9.x | 21 项单元测试，SQLite 内存库快速验证 |
+| 告警 | 策略模式多通道 | 企业微信 / 飞书 / SMTP 邮件，env 按需注册 |
+| 测试 | pytest 9.x | 33 项单元测试，SQLite 内存库快速验证 |
 
 ---
 
@@ -100,7 +101,7 @@
 extract_orders       CSV → ODS（多编码自适应，TRUNCATE+INSERT 原子事务）
      │
      ▼
-check_quality        空值检查 / 重复检查 / 异常金额预警（CASE WHEN 兼容 PG+SQLite）
+check_quality        空值/重复/异常金额检查 + 非关键字段空值率阈值预警（默认30%，超限写warning不中断）
      │
      ▼
 build_dwd            清洗 + 去重 + 金额计算 → DWD（原子事务）
@@ -120,6 +121,7 @@ generate_report      日报 CSV + 控制台输出
 | 调度频率 | 每日凌晨 2:00 (`0 2 * * *`) |
 | 时区 | UTC（`datetime(2020, 1, 1, tzinfo=timezone.utc)`） |
 | 失败重试 | 3 次，间隔 5 分钟 |
+| 失败告警 | `on_failure_callback` 自动多通道告警（企业微信/飞书/邮件，按需配置） |
 | 执行日志 | 自动写入 `etl_task_logs` 表，单次记录无重复 |
 | 日志方式 | Python `logging` 模块，兼容 Airflow 日志级别过滤 |
 
@@ -216,7 +218,7 @@ export PYTHONPATH=/path/to/order-etl-project:$PYTHONPATH
 
 ```bash
 pytest tests/ -v
-# 24 passed — 覆盖 extract / quality / transform / aggregate / report / db
+# 33 passed — 覆盖 extract / quality / transform / aggregate / report / db / notify
 ```
 
 ---
@@ -228,11 +230,12 @@ order-etl-project/
 ├── etl/                            # ETL 核心模块
 │   ├── db.py                       # 引擎单例 + 连接池 + 共享 ODS_DTYPE/DWD_DTYPE + truncate_and_load()
 │   ├── extract.py                  # Step1: CSV → ODS（多编码自适应 + 原子事务）
-│   ├── quality.py                  # Step2: 空值/重复/异常值检查（CASE WHEN 兼容 PG+SQLite）
+│   ├── quality.py                  # Step2: 空值/重复/异常值检查 + 非关键字段空值率阈值预警（默认30%）
 │   ├── transform.py                # Step3: ODS → DWD（清洗 + 金额计算 + 原子事务）
 │   ├── aggregate.py                # Step4: DWD → DWS（批量 UPSERT + 缓存的表定义）
 │   ├── report.py                   # Step5: 日报 CSV 生成
 │   ├── logging_utils.py            # 任务执行日志表记录（安全字符串截断）
+│   ├── notify.py                   # 多通道告警（企业微信/飞书/SMTP 邮件，策略模式 + env 按需注册）
 │   └── download_data.py            # UCI 数据集下载（urlopen + csv/xlsx 双支持）
 ├── dags/
 │   └── daily_order_pipeline.py     # Airflow DAG（通用 _execute_task 包装器，tz-aware）
@@ -242,10 +245,11 @@ order-etl-project/
 ├── tests/
 │   ├── test_db.py                  # truncate_and_load 原子事务（SQLite）
 │   ├── test_extract.py             # CSV 读取 + 列校验
-│   ├── test_quality.py             # 质量检查 SQL（SQLite 内存库）
+│   ├── test_quality.py             # 质量检查 SQL + 空值率阈值预警（SQLite 内存库）
 │   ├── test_transform.py           # 清洗逻辑 7 项测试
 │   ├── test_aggregate.py           # 聚合计算 3 项测试
-│   └── test_report.py              # 日报摘要 + 文件保存
+│   ├── test_report.py              # 日报摘要 + 文件保存
+│   └── test_notify.py              # 多通道告警注册/广播/容错
 ├── docs/
 │   ├── architecture.png            # 项目架构图
 │   ├── warehouse_design.png        # 数仓分层图
@@ -274,22 +278,24 @@ order-etl-project/
 
 ### 数据处理
 
-4. **多编码自适应**：CSV 读取自动 utf-8 → cp1252 → latin-1 回落，适配真实数据集
-5. **批量 UPSERT**：SQLAlchemy `pg_insert.on_conflict_do_update()` 替代逐行 iterrows，单条 SQL 完成
-6. **显式类型映射**：to_sql 使用共享 `ODS_DTYPE` / `DWD_DTYPE` 常量，防止 NUMERIC→FLOAT 精度丢失
+1. **多编码自适应**：CSV 读取自动 utf-8 → cp1252 → latin-1 回落，适配真实数据集
+2. **批量 UPSERT**：SQLAlchemy `pg_insert.on_conflict_do_update()` 替代逐行 iterrows，单条 SQL 完成
+3. **显式类型映射**：to_sql 使用共享 `ODS_DTYPE` / `DWD_DTYPE` 常量，防止 NUMERIC→FLOAT 精度丢失
 
 ### 质量与测试
 
-7. **数据质量检查**：3 维度 SQL 检查（空值/重复/异常金额），`CASE WHEN` 语法兼容 PostgreSQL + SQLite
-8. **24 项单元测试**：extract(4) + quality(3) + transform(7) + aggregate(3) + report(4) + db(3)，SQLite 内存库秒级验证
-9. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引 + 上游空表自动检测（skipped 状态，不静默 pass）
+1. **数据质量检查**：4 维度 SQL 检查（空值/重复/异常金额/空值率），`CASE WHEN` 语法兼容 PostgreSQL + SQLite
+2. **空值率阈值预警**：非关键字段空值率超过阈值（默认 30%）写入 warning 日志，不中断管线，兼顾日报产出与数据质量追溯
+3. **33 项单元测试**：extract(4) + quality(7) + transform(7) + aggregate(3) + report(4) + db(3) + notify(5)，SQLite 内存库秒级验证
+4. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引 + 上游空表自动检测（skipped 状态，不静默 pass）
 
 ### 工程实践
 
-10. **日志体系**：Python `logging` 模块替代 print，兼容 Airflow 日志级别过滤；`_safe_truncate()` 安全截断
-11. **DAG 代码精简**：通用 `_execute_task()` 包装器消除 5 个重复的任务函数；`EmptyOperator` + tz-aware start_date
-12. **跨平台兼容**：架构图生成脚本自动检测 Windows/macOS/Linux 中文环境字体
-13. **环境可复现**：`requirements-dev.txt` 精确锁版本；`.env.example` 模板；`.gitignore` 排除敏感文件
+1. **多通道告警**：策略模式可插拔告警（企业微信/飞书/SMTP），env 驱动按需注册，单通道异常不影响其他通道
+2. **日志体系**：Python `logging` 模块替代 print，兼容 Airflow 日志级别过滤；`_safe_truncate()` 安全截断
+3. **DAG 代码精简**：通用 `_execute_task()` 包装器消除 5 个重复的任务函数；`on_failure_callback` 自动告警；`EmptyOperator` + tz-aware start_date
+4. **跨平台兼容**：架构图生成脚本自动检测 Windows/macOS/Linux 中文环境字体
+5. **环境可复现**：`requirements-dev.txt` 精确锁版本；`.env.example` 模板（含告警通道）；`.gitignore` 排除敏感文件
 
 ---
 
