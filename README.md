@@ -68,7 +68,7 @@
 | 项目 | 说明 |
 |------|------|
 | 职责 | 原始订单数据镜像，不做业务处理 |
-| 写入策略 | TRUNCATE + INSERT 原子事务，写入失败自动回滚 |
+| 写入策略 | 全量：TRUNCATE + INSERT 原子事务 / 增量：APPEND 追加（`INCREMENTAL_MODE` 开关控制） |
 | 编码处理 | utf-8 → cp1252 → latin-1 自动回落，兼容多种 CSV 来源 |
 
 ### DWD 层 — `dwd_orders`
@@ -170,7 +170,7 @@ createdb order_warehouse
 
 # 配置环境变量（可选，默认连接 localhost:5432）
 cp .env.example .env
-# 编辑 .env: PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD
+# 编辑 .env 按需配置：数据库连接 / 告警通道 / 质量检查阈值
 ```
 
 ### 2. 初始化表结构
@@ -215,6 +215,12 @@ export PYTHONPATH=/path/to/order-etl-project:$PYTHONPATH
 # 访问 http://localhost:8080 查看 DAG 运行状态
 ```
 
+> **全量/增量切换**：编辑 `dags/daily_order_pipeline.py` 顶部 `INCREMENTAL_MODE` 变量：
+>
+> - `False`（默认）：每次全量 TRUNCATE+INSERT，适用于 UCI 静态数据集演示
+> - `True`：按 Airflow `execution_date` 追加新数据，适用于持续产出的生产数据源
+> - 首次启动或更换数据集时，应先以全量模式运行一次初始化。DWS 层 `ON CONFLICT DO UPDATE` 天然幂等，增量模式下可安全重跑。
+
 ### 6. 运行测试
 
 ```bash
@@ -229,22 +235,22 @@ pytest tests/ -v
 ```
 order-etl-project/
 ├── etl/                            # ETL 核心模块
-│   ├── db.py                       # 引擎单例 + 连接池 + 共享 ODS_DTYPE/DWD_DTYPE + truncate_and_load()
-│   ├── extract.py                  # Step1: CSV → ODS（多编码自适应 + 原子事务）
-│   ├── quality.py                  # Step2: 空值/重复/异常值检查 + 非关键字段空值率阈值预警（默认30%）
-│   ├── transform.py                # Step3: ODS → DWD（清洗 + 金额计算 + 原子事务）
+│   ├── db.py                       # 引擎单例 + 连接池 + ODS_DTYPE/DWD_DTYPE + truncate_and_load() + append_to_table()
+│   ├── extract.py                  # Step1: CSV → ODS（多编码自适应，全量/增量双模式）
+│   ├── quality.py                  # Step2: 空值/重复/异常金额检查 + 非关键字段空值率阈值预警（默认30%）
+│   ├── transform.py                # Step3: ODS → DWD（清洗 + 金额计算，全量/增量双模式）
 │   ├── aggregate.py                # Step4: DWD → DWS（批量 UPSERT + 缓存的表定义）
 │   ├── report.py                   # Step5: 日报 CSV 生成
 │   ├── logging_utils.py            # 任务执行日志表记录（安全字符串截断）
 │   ├── notify.py                   # 多通道告警（企业微信/飞书/SMTP 邮件，策略模式 + env 按需注册）
 │   └── download_data.py            # UCI 数据集下载（urlopen + csv/xlsx 双支持）
 ├── dags/
-│   └── daily_order_pipeline.py     # Airflow DAG（通用 _execute_task 包装器，tz-aware）
+│   └── daily_order_pipeline.py     # Airflow DAG（全量/增量双模式 + on_failure_callback 自动告警 + tz-aware）
 ├── sql/
 │   ├── create_tables.sql           # 建表 + 索引 + COMMENT
 │   └── verify_tables.sql           # 验证表结构（不插入数据）
 ├── tests/
-│   ├── test_db.py                  # truncate_and_load 原子事务（SQLite）
+│   ├── test_db.py                  # truncate_and_load 原子事务 + append_to_table 增量追加（SQLite）
 │   ├── test_extract.py             # CSV 读取 + 列校验
 │   ├── test_quality.py             # 质量检查 SQL + 空值率阈值预警（SQLite 内存库）
 │   ├── test_transform.py           # 清洗逻辑 7 项测试
