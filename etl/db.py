@@ -66,6 +66,19 @@ DWD_DTYPE = {
 }
 
 
+def append_to_table(table_name: str, df, dtype: dict) -> int:
+    """
+    追加写入（不做清空），用于增量 ETL 模式。
+
+    与 truncate_and_load 共用同一事务保证，
+    写入失败时已有数据不受影响。
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        df.to_sql(table_name, conn, if_exists="append", index=False, dtype=dtype)
+    return len(df)
+
+
 def truncate_and_load(table_name: str, df, dtype: dict) -> int:
     """
     在同一事务中 TRUNCATE + INSERT，保证原子性。

@@ -11,6 +11,7 @@ psycopg2-binary>=2.9.0
 
 # 调度
 apache-airflow>=2.5.0
+apache-airflow-providers-postgres>=5.0.0
 
 # 可视化（架构图/日报图表）
 matplotlib>=3.5.0

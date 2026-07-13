@@ -8,7 +8,7 @@ from datetime import date
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
-from etl.db import truncate_and_load, ODS_DTYPE
+from etl.db import truncate_and_load, append_to_table, ODS_DTYPE
 
 
 @pytest.fixture
@@ -83,3 +83,26 @@ class TestTruncateAndLoad:
         df = make_df([("INV001", "SKU001", "X", 1, date(2024, 1, 1), 1.0, "C001", "UK")])
         with pytest.raises(Exception):
             truncate_and_load("nonexistent_table", df, ODS_DTYPE)
+
+
+class TestAppendToTable:
+    """append_to_table 增量追加测试"""
+
+    def test_append_does_not_clear(self, sqlite_engine, monkeypatch):
+        """追加写入不覆盖已有数据"""
+        monkeypatch.setattr("etl.db.get_engine", lambda: sqlite_engine)
+
+        # 先写一批
+        df1 = make_df([("INV001", "SKU001", "Item A", 5, date(2024, 1, 1), 10.0, "C001", "UK")])
+        append_to_table("ods_orders", df1, ODS_DTYPE)
+
+        # 再追加一批——不应清空第一批
+        df2 = make_df([("INV002", "SKU002", "Item B", 3, date(2024, 1, 2), 5.0, "C002", "UK")])
+        count = append_to_table("ods_orders", df2, ODS_DTYPE)
+        assert count == 1
+
+        # 确认两批数据都在
+        with sqlite_engine.connect() as conn:
+            rows = conn.execute(text("SELECT invoice_no FROM ods_orders")).fetchall()
+        invoices = {r[0] for r in rows}
+        assert invoices == {"INV001", "INV002"}

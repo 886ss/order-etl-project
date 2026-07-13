@@ -15,15 +15,24 @@ Step 3: ODS → DWD，完成数据清洗与明细加工。
 from datetime import datetime
 import logging
 import pandas as pd
-from etl.db import get_engine, text, DWD_DTYPE, truncate_and_load
+from etl.db import get_engine, text, DWD_DTYPE, truncate_and_load, append_to_table
 
 logger = logging.getLogger(__name__)
 
 
-def load_ods_data(engine) -> pd.DataFrame:
-    """从 ODS 层读取全量数据"""
-    query = "SELECT * FROM ods_orders"
-    df = pd.read_sql(query, engine)
+def load_ods_data(engine, since_date: str = None) -> pd.DataFrame:
+    """
+    从 ODS 层读取数据
+
+    增量模式下仅读取 since_date 之后的记录，
+    避免对全量 ODS 重复清洗。
+    """
+    if since_date:
+        query = "SELECT * FROM ods_orders WHERE invoice_date >= :since"
+        df = pd.read_sql(query, engine, params={"since": since_date})
+    else:
+        query = "SELECT * FROM ods_orders"
+        df = pd.read_sql(query, engine)
     logger.info("从 ODS 读取: %d 行", len(df))
     return df
 
@@ -80,14 +89,16 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_to_dwd(df: pd.DataFrame) -> int:
+def load_to_dwd(df: pd.DataFrame, incremental: bool = False) -> int:
     """
     将清洗后数据写入 DWD 层表 dwd_orders
 
-    TRUNCATE 和 INSERT 在同一事务中执行，保证原子性。
+    全量模式（默认）：TRUNCATE + INSERT 同事务。
+    增量模式：追加写入，不截断已有数据。
 
     Args:
         df: 清洗后的 DataFrame
+        incremental: True 时使用追加模式
 
     Returns:
         写入行数
@@ -95,14 +106,22 @@ def load_to_dwd(df: pd.DataFrame) -> int:
     dwd_columns = list(DWD_DTYPE.keys())
     df_dwd = df[dwd_columns]
 
-    count = truncate_and_load("dwd_orders", df_dwd, DWD_DTYPE)
-    logger.info("DWD 写入完成: %d 行", count)
+    if incremental:
+        count = append_to_table("dwd_orders", df_dwd, DWD_DTYPE)
+        logger.info("DWD 增量追加: %d 行", count)
+    else:
+        count = truncate_and_load("dwd_orders", df_dwd, DWD_DTYPE)
+        logger.info("DWD 全量写入: %d 行", count)
     return count
 
 
-def run_transform() -> dict:
+def run_transform(incremental: bool = False, since_date: str = None) -> dict:
     """
     Step 3 入口：ODS → DWD 转换
+
+    Args:
+        incremental: True 时仅处理 since_date 之后的数据，追加到 DWD
+        since_date: 增量处理的起始日期（YYYY-MM-DD）
 
     Returns:
         执行结果摘要
@@ -110,19 +129,24 @@ def run_transform() -> dict:
     start = datetime.now()
     try:
         engine = get_engine()
-        df_ods = load_ods_data(engine)
+        df_ods = load_ods_data(engine, since_date=since_date if incremental else None)
 
         if df_ods.empty:
+            reason = (
+                f"无 {since_date} 之后的新增数据"
+                if incremental
+                else "ODS 表为空，请先执行 extract 步骤"
+            )
             return {
                 "task": "build_dwd",
                 "status": "skipped",
-                "reason": "ODS 表为空，请先执行 extract 步骤",
+                "reason": reason,
                 "rows": 0,
                 "duration": (datetime.now() - start).total_seconds(),
             }
 
         df_dwd = clean_data(df_ods)
-        row_count = load_to_dwd(df_dwd)
+        row_count = load_to_dwd(df_dwd, incremental=incremental)
         return {
             "task": "build_dwd",
             "status": "success",

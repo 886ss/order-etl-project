@@ -8,12 +8,24 @@
 特性：
 - 任务依赖清晰
 - 失败自动重试（3次，间隔5分钟）
+- 失败自动多通道告警（企业微信/飞书/邮件，按需配置）
 - 执行日志自动记录到 etl_task_logs
+- 支持全量/增量双模式（INCREMENTAL_MODE 开关）
+  全量（默认）：每次 TRUNCATE + INSERT，适用于静态数据集演示
+  增量：按 execution_date 抽取新数据并追加，适用于持续产出的生产数据源
 """
 
 import sys
 import os
 from datetime import datetime, timedelta, timezone
+
+# ============================================================
+# 运行模式配置
+# ============================================================
+# False（全量）：每次 TRUNCATE + INSERT，适用于 UCI 静态数据集演示
+# True （增量）：每次按 execution_date 抽取新数据追加，适用于生产数据源
+# 注意：首次启动或更换数据集时，应先以全量模式运行一次初始化 ODS
+INCREMENTAL_MODE = False
 
 # 将项目根目录加入 Python 路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -89,7 +101,7 @@ def _execute_task(task_name: str, run_func, *args) -> None:
         log_task_failure(log_id, str(e), start)
         raise AirflowException(str(e)) from e
 
-    if result["status"] in ("success", "passed", "warning"):
+    if result["status"] in ("success", "passed", "warning", "skipped"):
         log_task_success(log_id, start)
     else:
         log_task_failure(log_id, result.get("error", "unknown"), start)
@@ -98,7 +110,8 @@ def _execute_task(task_name: str, run_func, *args) -> None:
 
 def task_extract(**context):
     """Step 1: 数据抽取"""
-    _execute_task("extract_orders", run_extract, DATA_PATH)
+    since_date = context.get("ds") if INCREMENTAL_MODE else None
+    _execute_task("extract_orders", run_extract, DATA_PATH, INCREMENTAL_MODE, since_date)
 
 
 def task_quality(**context):
@@ -108,7 +121,8 @@ def task_quality(**context):
 
 def task_build_dwd(**context):
     """Step 3: 构建 DWD 层"""
-    _execute_task("build_dwd", run_transform)
+    since_date = context.get("ds") if INCREMENTAL_MODE else None
+    _execute_task("build_dwd", run_transform, INCREMENTAL_MODE, since_date)
 
 
 def task_build_dws(**context):

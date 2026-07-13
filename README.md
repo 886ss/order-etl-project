@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791)
 ![Airflow](https://img.shields.io/badge/Airflow-2.5+-017CEE)
-![Tests](https://img.shields.io/badge/tests-33/33_passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-34/34_passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -30,7 +30,7 @@
 | 可视化 | Matplotlib | 架构图 / 数仓分层图 / DAG 流程图 |
 | 日志 | Python logging | 统一替换 print，兼容 Airflow 日志系统 |
 | 告警 | 策略模式多通道 | 企业微信 / 飞书 / SMTP 邮件，env 按需注册 |
-| 测试 | pytest 9.x | 33 项单元测试，SQLite 内存库快速验证 |
+| 测试 | pytest 9.x | 34 项单元测试，SQLite 内存库快速验证 |
 
 ---
 
@@ -98,16 +98,16 @@
 ## 🔄 Airflow DAG 流程
 
 ```
-extract_orders       CSV → ODS（多编码自适应，TRUNCATE+INSERT 原子事务）
+extract_orders       CSV → ODS（多编码自适应；全量 TRUNCATE+INSERT / 增量 APPEND 双模式）
      │
      ▼
 check_quality        空值/重复/异常金额检查 + 非关键字段空值率阈值预警（默认30%，超限写warning不中断）
      │
      ▼
-build_dwd            清洗 + 去重 + 金额计算 → DWD（原子事务）
+build_dwd            清洗 + 去重 + 金额计算 → DWD（全量/增量双模式）
      │
      ▼
-build_dws            按日聚合 4 项指标 → DWS（批量 UPSERT）
+build_dws            按日聚合 4 项指标 → DWS（批量 UPSERT，天生支持增量幂等）
      │
      ▼
 generate_report      日报 CSV + 控制台输出
@@ -123,6 +123,7 @@ generate_report      日报 CSV + 控制台输出
 | 失败重试 | 3 次，间隔 5 分钟 |
 | 失败告警 | `on_failure_callback` 自动多通道告警（企业微信/飞书/邮件，按需配置） |
 | 执行日志 | 自动写入 `etl_task_logs` 表，单次记录无重复 |
+| 全量/增量 | `INCREMENTAL_MODE` 开关：全量（TRUNCATE+INSERT）或增量（按 execution_date 追加） |
 | 日志方式 | Python `logging` 模块，兼容 Airflow 日志级别过滤 |
 
 ---
@@ -218,7 +219,7 @@ export PYTHONPATH=/path/to/order-etl-project:$PYTHONPATH
 
 ```bash
 pytest tests/ -v
-# 33 passed — 覆盖 extract / quality / transform / aggregate / report / db / notify
+# 34 passed — 覆盖 extract / quality / transform / aggregate / report / db / notify
 ```
 
 ---
@@ -273,7 +274,7 @@ order-etl-project/
 ### 架构设计
 
 1. **数仓分层**：ODS → DWD → DWS 三层解耦，每层职责单一、可独立测试
-2. **原子写入**：TRUNCATE + INSERT 同事务执行，写入失败自动回滚，保护已有数据
+2. **全量/增量双模式**：`INCREMENTAL_MODE` 开关一键切换；全量 TRUNCATE+INSERT 原子事务；增量按日期追加 + DWS UPSERT 天然幂等
 3. **单例连接池**：Engine 模块级单例 + pool_size/max_overflow/pool_recycle 配置，杜绝连接泄漏
 
 ### 数据处理
@@ -286,7 +287,7 @@ order-etl-project/
 
 1. **数据质量检查**：4 维度 SQL 检查（空值/重复/异常金额/空值率），`CASE WHEN` 语法兼容 PostgreSQL + SQLite
 2. **空值率阈值预警**：非关键字段空值率超过阈值（默认 30%）写入 warning 日志，不中断管线，兼顾日报产出与数据质量追溯
-3. **33 项单元测试**：extract(4) + quality(7) + transform(7) + aggregate(3) + report(4) + db(3) + notify(5)，SQLite 内存库秒级验证
+3. **34 项单元测试**：extract(4) + quality(7) + transform(7) + aggregate(3) + report(4) + db(4) + notify(5)，SQLite 内存库秒级验证
 4. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引 + 上游空表自动检测（skipped 状态，不静默 pass）
 
 ### 工程实践

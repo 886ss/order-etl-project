@@ -8,7 +8,7 @@ import os
 import logging
 import pandas as pd
 from datetime import datetime
-from etl.db import get_engine, text, ODS_DTYPE, truncate_and_load
+from etl.db import get_engine, text, ODS_DTYPE, truncate_and_load, append_to_table
 
 logger = logging.getLogger(__name__)
 
@@ -83,15 +83,16 @@ def validate_columns(df: pd.DataFrame) -> bool:
     return True
 
 
-def load_to_ods(df: pd.DataFrame) -> int:
+def load_to_ods(df: pd.DataFrame, incremental: bool = False) -> int:
     """
     将原始数据写入 ODS 层表 ods_orders
 
-    TRUNCATE 和 INSERT 在同一事务中执行，确保原子性：
-    写入失败时 ODS 表不会被清空。
+    全量模式（默认）：TRUNCATE + INSERT 同事务，写入失败自动回滚。
+    增量模式：追加写入，不截断已有数据。
 
     Args:
         df: 原始数据 DataFrame
+        incremental: True 时使用追加模式（不清空 ODS）
 
     Returns:
         写入行数
@@ -99,17 +100,23 @@ def load_to_ods(df: pd.DataFrame) -> int:
     df_db = df.rename(columns=COLUMN_MAPPING)
     df_db["invoice_date"] = pd.to_datetime(df_db["invoice_date"])
 
-    count = truncate_and_load("ods_orders", df_db, ODS_DTYPE)
-    logger.info("ODS 写入完成: %d 行", count)
+    if incremental:
+        count = append_to_table("ods_orders", df_db, ODS_DTYPE)
+        logger.info("ODS 增量追加: %d 行", count)
+    else:
+        count = truncate_and_load("ods_orders", df_db, ODS_DTYPE)
+        logger.info("ODS 全量写入: %d 行", count)
     return count
 
 
-def run_extract(file_path: str) -> dict:
+def run_extract(file_path: str, incremental: bool = False, since_date: str = None) -> dict:
     """
     Step 1 入口：抽取 CSV → ODS
 
     Args:
         file_path: CSV 数据文件路径
+        incremental: True 时仅抽取 since_date 之后的新数据，追加到 ODS
+        since_date: 增量抽取的起始日期（YYYY-MM-DD），仅在 incremental=True 时生效
 
     Returns:
         执行结果摘要
@@ -118,7 +125,24 @@ def run_extract(file_path: str) -> dict:
     try:
         df = read_csv_data(file_path)
         validate_columns(df)
-        row_count = load_to_ods(df)
+
+        # 增量模式：仅保留 since_date 之后的数据
+        if since_date:
+            df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"])
+            before = len(df)
+            df = df[df["InvoiceDate"] >= since_date]
+            logger.info(
+                "增量过滤: %d → %d 行 (since %s)", before, len(df), since_date,
+            )
+            if df.empty:
+                return {
+                    "task": "extract_orders",
+                    "status": "skipped",
+                    "reason": f"无 {since_date} 之后的新增数据",
+                    "duration": (datetime.now() - start).total_seconds(),
+                }
+
+        row_count = load_to_ods(df, incremental=incremental)
         return {
             "task": "extract_orders",
             "status": "success",
