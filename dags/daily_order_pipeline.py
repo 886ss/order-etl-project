@@ -31,6 +31,7 @@ try:
     from etl.aggregate import run_aggregate
     from etl.report import run_report
     from etl.logging_utils import log_task_start, log_task_success, log_task_failure
+    from etl.notify import send_alert
 except ImportError as e:
     raise ImportError(
         f"{e}\n\n"
@@ -51,6 +52,15 @@ default_args = {
     "email_on_retry": False,
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": lambda ctx: send_alert(
+        f"ETL 失败: {ctx['task_instance'].task_id}",
+        (
+            f"DAG: {ctx['dag'].dag_id}\n"
+            f"执行时间: {ctx.get('execution_date', 'N/A')}\n"
+            f"任务: {ctx['task_instance'].task_id}\n"
+            f"错误: {ctx.get('exception', 'unknown')}"
+        ),
+    ),
 }
 
 # ============================================================
