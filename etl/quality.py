@@ -7,8 +7,7 @@ Step 2: 对 ODS 层数据进行质量检查。
 
 import logging
 from datetime import datetime
-from sqlalchemy import text
-from etl.db import get_engine
+from etl.db import get_engine, text
 
 logger = logging.getLogger(__name__)
 

@@ -7,8 +7,7 @@ ETL 任务日志工具
 
 import logging
 from datetime import datetime
-from sqlalchemy import text
-from etl.db import get_engine
+from etl.db import get_engine, text
 
 logger = logging.getLogger(__name__)
 

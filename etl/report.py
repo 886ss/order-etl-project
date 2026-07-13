@@ -12,8 +12,7 @@ import os
 import logging
 from datetime import datetime
 import pandas as pd
-from sqlalchemy import text
-from etl.db import get_engine
+from etl.db import get_engine, text
 
 logger = logging.getLogger(__name__)
 

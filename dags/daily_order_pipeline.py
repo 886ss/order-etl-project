@@ -67,7 +67,7 @@ def _execute_task(task_name: str, run_func, *args) -> None:
     except Exception as e:
         # run_* 函数内部已全量 catch，此分支仅兜底防御
         log_task_failure(log_id, str(e), start)
-        raise AirflowException(str(e))
+        raise AirflowException(str(e)) from e
 
     if result["status"] in ("success", "passed", "warning"):
         log_task_success(log_id, start)

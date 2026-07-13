@@ -92,11 +92,7 @@ def load_to_dwd(df: pd.DataFrame) -> int:
     Returns:
         写入行数
     """
-    dwd_columns = [
-        "invoice_no", "stock_code", "description", "quantity",
-        "invoice_date", "unit_price", "customer_id", "country",
-        "order_amount", "etl_time",
-    ]
+    dwd_columns = list(DWD_DTYPE.keys())
     df_dwd = df[dwd_columns]
 
     count = truncate_and_load("dwd_orders", df_dwd, DWD_DTYPE)
