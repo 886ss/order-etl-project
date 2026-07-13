@@ -92,6 +92,15 @@ def run_quality_check() -> dict:
         dup_info = check_duplicates(engine)
         abnormal_info = check_abnormal_amounts(engine)
 
+        # 空表视为检查失败，而非"通过"
+        if null_info.get("total_rows", 0) == 0:
+            return {
+                "task": "check_quality",
+                "status": "failed",
+                "error": "ODS 表为空，请先执行 extract 步骤",
+                "duration": (datetime.now() - start).total_seconds(),
+            }
+
         # 判定是否通过
         has_critical = (
             null_info["null_invoice_no"] > 0

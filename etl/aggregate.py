@@ -122,6 +122,16 @@ def run_aggregate() -> dict:
     try:
         engine = get_engine()
         df_dwd = load_dwd_data(engine)
+
+        if df_dwd.empty:
+            return {
+                "task": "build_dws",
+                "status": "skipped",
+                "reason": "DWD 表为空，请先执行 transform 步骤",
+                "rows": 0,
+                "duration": (datetime.now() - start).total_seconds(),
+            }
+
         df_agg = aggregate_daily(df_dwd)
         row_count = load_to_dws(df_agg)
         return {

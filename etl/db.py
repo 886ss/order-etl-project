@@ -80,6 +80,12 @@ def truncate_and_load(table_name: str, df, dtype: dict) -> int:
     """
     engine = get_engine()
     with engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY"))
+        # PostgreSQL: TRUNCATE 更快且重置自增序列
+        # SQLite/其他: DELETE FROM 兜底
+        dialect_name = engine.dialect.name
+        if dialect_name == "postgresql":
+            conn.execute(text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY"))
+        else:
+            conn.execute(text(f"DELETE FROM {table_name}"))
         df.to_sql(table_name, conn, if_exists="append", index=False, dtype=dtype)
     return len(df)

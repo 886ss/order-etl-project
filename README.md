@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791)
 ![Airflow](https://img.shields.io/badge/Airflow-2.5+-017CEE)
-![Tests](https://img.shields.io/badge/tests-21/21_passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-24/24_passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -174,6 +174,9 @@ cp .env.example .env
 
 ```bash
 psql -d order_warehouse -f sql/create_tables.sql
+
+# 验证表是否正确创建
+psql -d order_warehouse -f sql/verify_tables.sql
 ```
 
 ### 3. 下载数据集
@@ -196,11 +199,15 @@ python etl/report.py      # Step 5: 生成日报
 ### 5. Airflow 调度模式
 
 ```bash
-# 方式A: Airflow Standalone（开箱即用）
+# 方式A: 项目根目录即 Airflow HOME（推荐）
+cd order-etl-project
+export AIRFLOW_HOME=$(pwd)
 airflow standalone
 
-# 方式B: 复制 DAG 到已有 Airflow 实例
-cp dags/daily_order_pipeline.py $AIRFLOW_HOME/dags/
+# 方式B: 已有 Airflow 实例，设置 DAG 搜索路径 + PYTHONPATH
+export AIRFLOW__CORE__DAGS_FOLDER=/path/to/order-etl-project/dags
+export PYTHONPATH=/path/to/order-etl-project:$PYTHONPATH
+# ⚠️ 不要将 DAG 文件单独复制到 ~/airflow/dags/，否则 import 路径会失效
 
 # 访问 http://localhost:8080 查看 DAG 运行状态
 ```
@@ -209,7 +216,7 @@ cp dags/daily_order_pipeline.py $AIRFLOW_HOME/dags/
 
 ```bash
 pytest tests/ -v
-# 21 passed — 覆盖 extract / quality / transform / aggregate / report
+# 24 passed — 覆盖 extract / quality / transform / aggregate / report / db
 ```
 
 ---
@@ -231,8 +238,9 @@ order-etl-project/
 │   └── daily_order_pipeline.py     # Airflow DAG（通用 _execute_task 包装器，tz-aware）
 ├── sql/
 │   ├── create_tables.sql           # 建表 + 索引 + COMMENT
-│   └── init_data.sql               # 初始化脚本
+│   └── verify_tables.sql           # 验证表结构（不插入数据）
 ├── tests/
+│   ├── test_db.py                  # truncate_and_load 原子事务（SQLite）
 │   ├── test_extract.py             # CSV 读取 + 列校验
 │   ├── test_quality.py             # 质量检查 SQL（SQLite 内存库）
 │   ├── test_transform.py           # 清洗逻辑 7 项测试
@@ -273,8 +281,8 @@ order-etl-project/
 ### 质量与测试
 
 7. **数据质量检查**：3 维度 SQL 检查（空值/重复/异常金额），`CASE WHEN` 语法兼容 PostgreSQL + SQLite
-8. **21 项单元测试**：extract(4) + quality(3) + transform(7) + aggregate(3) + report(4)，SQLite 内存库秒级验证
-9. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引，代码+库双保障
+8. **24 项单元测试**：extract(4) + quality(3) + transform(7) + aggregate(3) + report(4) + db(3)，SQLite 内存库秒级验证
+9. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引 + 上游空表自动检测（skipped 状态，不静默 pass）
 
 ### 工程实践
 

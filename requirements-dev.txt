@@ -8,6 +8,7 @@ numpy==1.26.4
 
 # 数据库
 sqlalchemy==2.0.49
+psycopg2-binary>=2.9.0
 
 # 可视化（架构图/日报图表）
 matplotlib==3.9.2

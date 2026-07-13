@@ -111,6 +111,16 @@ def run_transform() -> dict:
     try:
         engine = get_engine()
         df_ods = load_ods_data(engine)
+
+        if df_ods.empty:
+            return {
+                "task": "build_dwd",
+                "status": "skipped",
+                "reason": "ODS 表为空，请先执行 extract 步骤",
+                "rows": 0,
+                "duration": (datetime.now() - start).total_seconds(),
+            }
+
         df_dwd = clean_data(df_ods)
         row_count = load_to_dwd(df_dwd)
         return {

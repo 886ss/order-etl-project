@@ -24,12 +24,22 @@ from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
 
-from etl.extract import run_extract
-from etl.quality import run_quality_check
-from etl.transform import run_transform
-from etl.aggregate import run_aggregate
-from etl.report import run_report
-from etl.logging_utils import log_task_start, log_task_success, log_task_failure
+try:
+    from etl.extract import run_extract
+    from etl.quality import run_quality_check
+    from etl.transform import run_transform
+    from etl.aggregate import run_aggregate
+    from etl.report import run_report
+    from etl.logging_utils import log_task_start, log_task_success, log_task_failure
+except ImportError as e:
+    raise ImportError(
+        f"{e}\n\n"
+        "ETL 模块导入失败——DAG 文件必须保留在项目目录内运行。\n"
+        "请使用以下方式之一部署：\n"
+        "  方式A: export AIRFLOW_HOME=$(pwd) && airflow standalone\n"
+        "  方式B: 设置 PYTHONPATH 指向项目根目录后启动 Airflow\n"
+        "不要将 DAG 文件单独复制到 ~/airflow/dags/ 下。"
+    )
 
 # ============================================================
 # DAG 默认配置
