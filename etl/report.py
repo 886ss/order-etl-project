@@ -135,6 +135,7 @@ def run_report(output_dir: str = "reports") -> dict:
             "duration": (datetime.now() - start).total_seconds(),
         }
     except Exception as e:
+        logger.error("generate_report 失败: %s", e)
         return {
             "task": "generate_report",
             "status": "failed",

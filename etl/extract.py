@@ -126,6 +126,7 @@ def run_extract(file_path: str) -> dict:
             "duration": (datetime.now() - start).total_seconds(),
         }
     except Exception as e:
+        logger.error("extract_orders 失败: %s", e)
         return {
             "task": "extract_orders",
             "status": "failed",

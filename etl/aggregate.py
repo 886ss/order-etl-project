@@ -141,6 +141,7 @@ def run_aggregate() -> dict:
             "duration": (datetime.now() - start).total_seconds(),
         }
     except Exception as e:
+        logger.error("build_dws 失败: %s", e)
         return {
             "task": "build_dws",
             "status": "failed",

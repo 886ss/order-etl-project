@@ -130,6 +130,7 @@ def run_transform() -> dict:
             "duration": (datetime.now() - start).total_seconds(),
         }
     except Exception as e:
+        logger.error("build_dwd 失败: %s", e)
         return {
             "task": "build_dwd",
             "status": "failed",

@@ -127,6 +127,7 @@ def run_quality_check() -> dict:
         return report
 
     except Exception as e:
+        logger.error("check_quality 失败: %s", e)
         return {
             "task": "check_quality",
             "status": "failed",
