@@ -16,10 +16,6 @@
 
 **数据来源**：[UCI Online Retail Dataset](https://archive.ics.uci.edu/dataset/352/online+retail)（~54 万行英国电商交易记录）
 
-> 🎯 定位：本科数据开发 / 大数据开发 / 数仓开发实习生求职展示项目
->
-> 📖 **面试准备**：→ [面试准备指南 (docs/INTERVIEW_GUIDE.md)](docs/INTERVIEW_GUIDE.md) — 20 个高频面试问题 + STAR 话术
-
 ---
 
 ## 🛠️ 技术栈
@@ -247,7 +243,6 @@ order-etl-project/
 │   ├── warehouse_design.png        # 数仓分层图
 │   ├── dag_flow.png                # DAG 流程图
 │   ├── generate_diagrams.py        # 架构图生成脚本（跨平台中文字体自动检测）
-│   └── INTERVIEW_GUIDE.md          # 面试准备指南
 ├── data/                           # 数据集目录
 │   └── online_retail.csv           # （需下载）
 ├── reports/                        # 日报输出目录
@@ -287,18 +282,6 @@ order-etl-project/
 11. **DAG 代码精简**：通用 `_execute_task()` 包装器消除 5 个重复的任务函数；`EmptyOperator` + tz-aware start_date
 12. **跨平台兼容**：架构图生成脚本自动检测 Windows/macOS/Linux 中文环境字体
 13. **环境可复现**：`requirements-dev.txt` 精确锁版本；`.env.example` 模板；`.gitignore` 排除敏感文件
-
----
-
-## 📝 简历描述（可直接使用）
-
-> **订单数据数仓 ETL 项目** ｜ Python · PostgreSQL · Airflow · Pandas
->
-> - 基于 Airflow 构建离线 ETL 调度流程，设计 ODS→DWD→DWS 三层数仓架构，实现订单数据从抽取到日报的全自动化处理；
-> - 使用 SQLAlchemy 批量 UPSERT 替代逐行插入，引入连接池单例与原子事务写入，保障数据安全与执行效率；
-> - 构建 3 维度数据质量检查体系（空值/重复/异常值），SQL 兼容 PostgreSQL 与 SQLite；
-> - 基于 PostgreSQL 实现 4 张业务表 + 4 个查询索引设计，配合 21 项 pytest 单元测试覆盖全链路；
-> - 统一 logging 日志体系，支持 Airflow 失败重试与任务执行日志自动记录。
 
 ---
 
