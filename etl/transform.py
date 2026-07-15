@@ -15,7 +15,10 @@ Step 3: ODS → DWD，完成数据清洗与明细加工。
 from datetime import datetime
 import logging
 import pandas as pd
-from etl.db import get_engine, text, DWD_DTYPE, truncate_and_load, append_to_table
+from etl.db import (
+    get_engine, text, DWD_DTYPE, REJECTED_DTYPE,
+    truncate_and_load, append_to_table, upsert_incremental,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,29 +51,35 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     4. 去除 UnitPrice ≤ 0 的记录
     5. 计算订单金额
     6. 添加 etl_time
+
+    被剔除的行返回给调用方，由调用方负责归档到 rejected 表。
     """
     original_count = len(df)
+    rejected_parts = []
 
-    # 1. 过滤取消订单（InvoiceNo 以 'C' 开头的是取消/退货）
+    # 1. 过滤取消订单
     cancel_mask = df["invoice_no"].str.startswith("C", na=False)
-    cancel_count = cancel_mask.sum()
+    rejected_parts.append(df[cancel_mask].assign(rejected_reason="取消订单 (InvoiceNo以C开头)"))
     df = df[~cancel_mask]
-    logger.info("过滤取消订单: %d 行", cancel_count)
+    logger.info("过滤取消订单: %d 行", cancel_mask.sum())
 
     # 2. 去除 CustomerID 为空
-    null_cust = df["customer_id"].isna().sum()
-    df = df.dropna(subset=["customer_id"])
-    logger.info("去除空客户ID: %d 行", null_cust)
+    null_cust_mask = df["customer_id"].isna()
+    rejected_parts.append(df[null_cust_mask].assign(rejected_reason="CustomerID 为空"))
+    df = df[~null_cust_mask]
+    logger.info("去除空客户ID: %d 行", null_cust_mask.sum())
 
     # 3. 去除 Quantity ≤ 0
-    neg_qty = (df["quantity"] <= 0).sum()
+    neg_qty_mask = df["quantity"] <= 0
+    rejected_parts.append(df[neg_qty_mask].assign(rejected_reason="Quantity ≤ 0"))
     df = df[df["quantity"] > 0]
-    logger.info("去除非正数量: %d 行", neg_qty)
+    logger.info("去除非正数量: %d 行", neg_qty_mask.sum())
 
     # 4. 去除 UnitPrice ≤ 0
-    neg_price = (df["unit_price"] <= 0).sum()
+    neg_price_mask = df["unit_price"] <= 0
+    rejected_parts.append(df[neg_price_mask].assign(rejected_reason="UnitPrice ≤ 0"))
     df = df[df["unit_price"] > 0]
-    logger.info("去除非正单价: %d 行", neg_price)
+    logger.info("去除非正单价: %d 行", neg_price_mask.sum())
 
     # 5. 计算订单金额
     df["order_amount"] = df["quantity"] * df["unit_price"]
@@ -86,7 +95,29 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         removed / original_count * 100 if original_count else 0,
     )
 
-    return df
+    # 拼接被剔除行
+    rejected_df = pd.concat(rejected_parts, ignore_index=True) if rejected_parts else pd.DataFrame()
+    return df, rejected_df
+
+
+def archive_rejected(rejected_df: pd.DataFrame) -> int:
+    """
+    将清洗过程中被剔除的数据归档到 ods_orders_rejected 表。
+
+    每一行标记拒绝原因（rejected_reason）和归档时间（rejected_at），
+    方便后续人工核查和数据治理审计。
+    """
+    if rejected_df.empty:
+        return 0
+
+    rejected_df = rejected_df.copy()
+    rejected_df["rejected_at"] = datetime.now()
+    rejected_cols = [c for c in REJECTED_DTYPE.keys() if c in rejected_df.columns]
+    df_rej = rejected_df[rejected_cols]
+
+    count = append_to_table("ods_orders_rejected", df_rej, REJECTED_DTYPE)
+    logger.info("脏数据归档: %d 行 → ods_orders_rejected", count)
+    return count
 
 
 def load_to_dwd(df: pd.DataFrame, incremental: bool = False) -> int:
@@ -94,11 +125,11 @@ def load_to_dwd(df: pd.DataFrame, incremental: bool = False) -> int:
     将清洗后数据写入 DWD 层表 dwd_orders
 
     全量模式（默认）：TRUNCATE + INSERT 同事务。
-    增量模式：追加写入，不截断已有数据。
+    增量模式：幂等追加（DELETE 日期批次 + INSERT），Airflow 重跑不重复。
 
     Args:
         df: 清洗后的 DataFrame
-        incremental: True 时使用追加模式
+        incremental: True 时使用幂等增量模式
 
     Returns:
         写入行数
@@ -107,8 +138,8 @@ def load_to_dwd(df: pd.DataFrame, incremental: bool = False) -> int:
     df_dwd = df[dwd_columns]
 
     if incremental:
-        count = append_to_table("dwd_orders", df_dwd, DWD_DTYPE)
-        logger.info("DWD 增量追加: %d 行", count)
+        count = upsert_incremental("dwd_orders", df_dwd, DWD_DTYPE, "invoice_date")
+        logger.info("DWD 增量写入（幂等）: %d 行", count)
     else:
         count = truncate_and_load("dwd_orders", df_dwd, DWD_DTYPE)
         logger.info("DWD 全量写入: %d 行", count)
@@ -145,7 +176,8 @@ def run_transform(incremental: bool = False, since_date: str = None) -> dict:
                 "duration": (datetime.now() - start).total_seconds(),
             }
 
-        df_dwd = clean_data(df_ods)
+        df_dwd, rejected_df = clean_data(df_ods)
+        archive_rejected(rejected_df)
         row_count = load_to_dwd(df_dwd, incremental=incremental)
         return {
             "task": "build_dwd",

@@ -65,16 +65,57 @@ DWD_DTYPE = {
     "etl_time": DateTime,
 }
 
+# 脏数据归档表 — 记录清洗过程中被剔除的数据行及其拒绝原因
+REJECTED_DTYPE = {
+    **ODS_DTYPE,
+    "rejected_reason": String(200),
+    "rejected_at": DateTime,
+}
+
 
 def append_to_table(table_name: str, df, dtype: dict) -> int:
     """
     追加写入（不做清空），用于增量 ETL 模式。
 
-    与 truncate_and_load 共用同一事务保证，
     写入失败时已有数据不受影响。
     """
     engine = get_engine()
     with engine.begin() as conn:
+        df.to_sql(table_name, conn, if_exists="append", index=False, dtype=dtype)
+    return len(df)
+
+
+def upsert_incremental(table_name: str, df, dtype: dict, date_column: str) -> int:
+    """
+    幂等增量写入：删除目标日期范围内的旧批次，再插入新批次。
+
+    DELETE + INSERT 在同一事务中执行，Airflow 重跑不会产生重复数据。
+    适用于 ODS/DWD 层的增量写入。
+    生产级参考：ON CONFLICT DO NOTHING（PG）或 batch_id 去重。
+
+    Args:
+        table_name: 目标表名
+        df: 要写入的 DataFrame
+        dtype: SQLAlchemy 列类型映射
+        date_column: 日期列名，用于划定批次范围
+
+    Returns:
+        写入行数
+    """
+    engine = get_engine()
+    dates = df[date_column].drop_duplicates()
+    min_date = dates.min()
+    max_date = dates.max()
+
+    with engine.begin() as conn:
+        if min_date is not None and max_date is not None:
+            conn.execute(
+                text(
+                    f"DELETE FROM {table_name} "
+                    f"WHERE {date_column} >= :min_d AND {date_column} <= :max_d"
+                ),
+                {"min_d": min_date, "max_d": max_date},
+            )
         df.to_sql(table_name, conn, if_exists="append", index=False, dtype=dtype)
     return len(df)
 

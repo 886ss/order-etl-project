@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791)
 ![Airflow](https://img.shields.io/badge/Airflow-2.5+-017CEE)
-![Tests](https://img.shields.io/badge/tests-34/34_passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-36/36_passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -30,7 +30,7 @@
 | 可视化 | Matplotlib | 架构图 / 数仓分层图 / DAG 流程图 |
 | 日志 | Python logging | 统一替换 print，兼容 Airflow 日志系统 |
 | 告警 | 策略模式多通道 | 企业微信 / 飞书 / SMTP 邮件，env 按需注册 |
-| 测试 | pytest 9.x | 34 项单元测试，SQLite 内存库快速验证 |
+| 测试 | pytest 9.x | 36 项单元测试，SQLite 内存库快速验证 |
 
 ---
 
@@ -50,13 +50,42 @@
 │ ODS 层   │ ────────► │ DWD 层   │ ───────────► │ DWS 层   │
 │ods_orders│ transform  │dwd_orders│              │dws_sales │
 │ ~54万行  │            │ 清洗明细  │              │ _daily   │
-└────┬────┘            └─────────┘              └────┬────┘
-     │                                               │
+└────┬────┘            └────┬────┘              └────┬────┘
+     │                      │                        │
+     │              ┌───────┘                        │
+     │              ▼ 脏数据归档                       │
+     │         ┌────────────────┐                    │
+     │         │ods_orders_     │                    │
+     │         │   rejected     │                    │
+     │         │ (治理回收站)    │                    │
+     │         └────────────────┘                    │
      ▼                                               ▼
-┌─────────┐                                     ┌─────────┐
-│ CSV 文件 │                                     │ 日报输出 │
-│Latin-1  │                                     │ .csv    │
-└─────────┘                                     └─────────┘
+┌─────────┐  ┌ ─ ─ ─ ─ ─ ─ ─  ─ ─ ─ ─ ─ ─ ─  ┌─────────┐
+│ CSV 文件 │  │   ADS 应用层（生产扩展）           │ 日报/大屏 │
+│Latin-1  │  │   业务视图 · BI 对接 · 报表       │ .csv    │
+└─────────┘  └ ─ ─ ─ ─ ─ ─ ─  ─ ─ ─ ─ ─ ─ ─  └─────────┘
+```
+
+### 🔗 数据血缘
+
+所有 COMMENT 已写入 SQL 建表脚本，`psql -d order_warehouse -f sql/create_tables.sql` 执行后 PostgreSQL 中直接可查：
+
+```
+text
+online_retail.csv ──extract──► ods_orders (ODS)
+                                   │
+                    ┌──────────────┤
+                    │              │
+                    ▼              ▼
+           dwd_orders (DWD)    ods_orders_rejected (治理回收站)
+           clean_data()        archive_rejected()
+                    │
+                    ▼
+           dws_sales_daily (DWS)
+           aggregate_daily() → UPSERT
+
+查询血缘:  SELECT obj_description('ods_orders'::regclass);
+          → 'ODS层-原始订单数据镜像 来源: CSV文件(online_retail.csv)'
 ```
 
 ---
@@ -70,6 +99,7 @@
 | 职责 | 原始订单数据镜像，不做业务处理 |
 | 写入策略 | 全量：TRUNCATE + INSERT 原子事务 / 增量：APPEND 追加（`INCREMENTAL_MODE` 开关控制） |
 | 编码处理 | utf-8 → cp1252 → latin-1 自动回落，兼容多种 CSV 来源 |
+| 数据治理 | 清洗剔除行归档到 `ods_orders_rejected`，标记拒绝原因，支持人工回溯 |
 
 ### DWD 层 — `dwd_orders`
 
@@ -104,7 +134,7 @@ extract_orders       CSV → ODS（多编码自适应；全量 TRUNCATE+INSERT /
 check_quality        空值/重复/异常金额检查 + 非关键字段空值率阈值预警（默认30%，超限写warning不中断）
      │
      ▼
-build_dwd            清洗 + 去重 + 金额计算 → DWD（全量/增量双模式）
+build_dwd            清洗 + 脏数据归档 → rejected 表 + 金额计算 → DWD（全量/增量双模式）
      │
      ▼
 build_dws            按日聚合 4 项指标 → DWS（批量 UPSERT，天生支持增量幂等）
@@ -136,6 +166,7 @@ generate_report      日报 CSV + 控制台输出
 | `dwd_orders` | DWD | ~400,000 | 清洗后订单明细，含 `order_amount` |
 | `dws_sales_daily` | DWS | ~400 | 按日聚合的 4 项销售指标 |
 | `etl_task_logs` | 日志 | 每任务 1 行 | ETL 步骤执行状态与耗时 |
+| `ods_orders_rejected` | 治理 | 被剔除行数 | 脏数据回收站，标记拒绝原因与归档时间 |
 
 ### 查询索引
 
@@ -150,6 +181,86 @@ generate_report      日报 CSV + 控制台输出
 
 - `dwd_orders.customer_id` 设为 `NOT NULL`，与清洗逻辑 `dropna(subset=["customer_id"])` 形成数据库层面的防御
 - `dws_sales_daily.stat_date` 设 `UNIQUE`，配合 `ON CONFLICT` UPSERT
+
+### 数据治理表
+
+| 表名 | 说明 |
+|------|------|
+| `ods_orders_rejected` | 数据治理脏数据回收站。`transform.clean_data()` 剔除的行自动归档，标记 `rejected_reason`（取消订单/CustomerID为空/Quantity≤0/UnitPrice≤0），支持人工回溯核验 |
+
+---
+
+## 🔌 BI 对接指引
+
+DWS 层 `dws_sales_daily` 表即为 BI 数据源，任一 BI 工具连接 PostgreSQL 即可直接查询：
+
+```
+Host:     localhost  (PG_HOST)
+Port:     5432       (PG_PORT)
+Database: order_warehouse
+User:     postgres   (PG_USER)
+Table:    dws_sales_daily
+```
+
+支持工具：FineBI / Metabase / Superset / Power BI / Tableau / Grafana。
+
+```sql
+-- BI 大屏示例：近 7 天销售额趋势
+SELECT stat_date, daily_sales_amount, daily_order_count
+FROM dws_sales_daily
+WHERE stat_date >= CURRENT_DATE - INTERVAL '7 days'
+ORDER BY stat_date DESC;
+```
+
+---
+
+## 📐 生产扩展设计
+
+以下能力在 UCI 静态数据集上不实现代码，但面试/交付时可阐述完整设计思路。
+
+### ADS 应用层
+
+当前链路 ODS → DWD → DWS，规模增大且业务方增多时，在 DWS 上加 ADS 视图层：
+
+| 场景 | ADS 视图示例 |
+|------|-------------|
+| 运营日报 | `ads_daily_report` — 销售额/订单数/客单价环比 |
+| 管理月报 | `ads_monthly_kpi` — 月度销售额同比 |
+| 商品分析 | `ads_product_topn` — 按品类销售额 Top N |
+
+### 缓慢变化维 (SCD Type 2)
+
+当订单数据有状态字段（已下单 → 已支付 → 已发货 → 已完成）时，维度表需追踪历史变化：
+
+```sql
+-- 示例：商品维度 SCD Type 2 拉链表
+CREATE TABLE dim_product_scd2 (
+    product_key   SERIAL PRIMARY KEY,
+    stock_code    VARCHAR(50),
+    unit_price    NUMERIC(10, 4),
+    start_date    DATE NOT NULL,        -- 版本生效日
+    end_date      DATE,                  -- NULL = 当前有效
+    is_current    BOOLEAN DEFAULT TRUE
+);
+```
+
+每次属性变更：旧行 `end_date=NOW(), is_current=FALSE`，新行 `start_date=NOW(), is_current=TRUE`。
+
+### 上游数据依赖感知
+
+生产中上游数据同步可能延迟，Airflow DAG 加 `ExternalTaskSensor` 等待：
+
+```python
+from airflow.sensors.external_task import ExternalTaskSensor
+
+wait_upstream = ExternalTaskSensor(
+    task_id="wait_for_source_data",
+    external_dag_id="source_sync_dag",
+    external_task_id="sync_complete",
+    allowed_states=["success"],
+    timeout=3600, poke_interval=60,
+)
+```
 
 ---
 
@@ -225,7 +336,7 @@ export PYTHONPATH=/path/to/order-etl-project:$PYTHONPATH
 
 ```bash
 pytest tests/ -v
-# 34 passed — 覆盖 extract / quality / transform / aggregate / report / db / notify
+# 36 passed — 覆盖 extract / quality / transform / aggregate / report / db / notify
 ```
 
 ---
@@ -235,10 +346,10 @@ pytest tests/ -v
 ```
 order-etl-project/
 ├── etl/                            # ETL 核心模块
-│   ├── db.py                       # 引擎单例 + 连接池 + ODS_DTYPE/DWD_DTYPE + truncate_and_load() + append_to_table()
+│   ├── db.py                       # 引擎单例 + 连接池 + ODS_DTYPE/DWD_DTYPE/REJECTED_DTYPE + truncate_and_load() / append_to_table() / upsert_incremental()
 │   ├── extract.py                  # Step1: CSV → ODS（多编码自适应，全量/增量双模式）
 │   ├── quality.py                  # Step2: 空值/重复/异常金额检查 + 非关键字段空值率阈值预警（默认30%）
-│   ├── transform.py                # Step3: ODS → DWD（清洗 + 金额计算，全量/增量双模式）
+│   ├── transform.py                # Step3: ODS → DWD（清洗 + 脏数据归档 + 金额计算，全量/增量双模式）
 │   ├── aggregate.py                # Step4: DWD → DWS（批量 UPSERT + 缓存的表定义）
 │   ├── report.py                   # Step5: 日报 CSV 生成
 │   ├── logging_utils.py            # 任务执行日志表记录（安全字符串截断）
@@ -247,13 +358,13 @@ order-etl-project/
 ├── dags/
 │   └── daily_order_pipeline.py     # Airflow DAG（全量/增量双模式 + on_failure_callback 自动告警 + tz-aware）
 ├── sql/
-│   ├── create_tables.sql           # 建表 + 索引 + COMMENT
+│   ├── create_tables.sql           # 建表（含 ods_orders_rejected 脏数据回收站）+ 索引 + 血缘 COMMENT
 │   └── verify_tables.sql           # 验证表结构（不插入数据）
 ├── tests/
 │   ├── test_db.py                  # truncate_and_load 原子事务 + append_to_table 增量追加（SQLite）
 │   ├── test_extract.py             # CSV 读取 + 列校验
 │   ├── test_quality.py             # 质量检查 SQL + 空值率阈值预警（SQLite 内存库）
-│   ├── test_transform.py           # 清洗逻辑 7 项测试
+│   ├── test_transform.py           # 清洗逻辑 9 项测试（含脏数据归档验证）
 │   ├── test_aggregate.py           # 聚合计算 3 项测试
 │   ├── test_report.py              # 日报摘要 + 文件保存
 │   └── test_notify.py              # 多通道告警注册/广播/容错
@@ -293,7 +404,7 @@ order-etl-project/
 
 1. **数据质量检查**：4 维度 SQL 检查（空值/重复/异常金额/空值率），`CASE WHEN` 语法兼容 PostgreSQL + SQLite
 2. **空值率阈值预警**：非关键字段空值率超过阈值（默认 30%）写入 warning 日志，不中断管线，兼顾日报产出与数据质量追溯
-3. **34 项单元测试**：extract(4) + quality(7) + transform(7) + aggregate(3) + report(4) + db(4) + notify(5)，SQLite 内存库秒级验证
+3. **36 项单元测试**：extract(4) + quality(7) + transform(9) + aggregate(3) + report(4) + db(4) + notify(5)，SQLite 内存库秒级验证
 4. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引 + 上游空表自动检测（skipped 状态，不静默 pass）
 
 ### 工程实践

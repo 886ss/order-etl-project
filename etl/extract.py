@@ -8,7 +8,7 @@ import os
 import logging
 import pandas as pd
 from datetime import datetime
-from etl.db import get_engine, text, ODS_DTYPE, truncate_and_load, append_to_table
+from etl.db import get_engine, text, ODS_DTYPE, truncate_and_load, append_to_table, upsert_incremental
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ def load_to_ods(df: pd.DataFrame, incremental: bool = False) -> int:
     将原始数据写入 ODS 层表 ods_orders
 
     全量模式（默认）：TRUNCATE + INSERT 同事务，写入失败自动回滚。
-    增量模式：追加写入，不截断已有数据。
+    增量模式：幂等追加（DELETE 日期批次 + INSERT），Airflow 重跑不重复。
 
     Args:
         df: 原始数据 DataFrame
@@ -101,8 +101,8 @@ def load_to_ods(df: pd.DataFrame, incremental: bool = False) -> int:
     df_db["invoice_date"] = pd.to_datetime(df_db["invoice_date"])
 
     if incremental:
-        count = append_to_table("ods_orders", df_db, ODS_DTYPE)
-        logger.info("ODS 增量追加: %d 行", count)
+        count = upsert_incremental("ods_orders", df_db, ODS_DTYPE, "invoice_date")
+        logger.info("ODS 增量写入（幂等）: %d 行", count)
     else:
         count = truncate_and_load("ods_orders", df_db, ODS_DTYPE)
         logger.info("ODS 全量写入: %d 行", count)

@@ -43,34 +43,34 @@ class TestCleanData:
 
     def test_removes_cancelled_orders(self, sample_ods_data):
         """测试过滤取消订单（InvoiceNo 以 C 开头）"""
-        df = clean_data(sample_ods_data.copy())
+        df, _ = clean_data(sample_ods_data.copy())
         assert "C-INV003" not in df["invoice_no"].values
 
     def test_removes_null_customer_id(self, sample_ods_data):
         """测试去除 CustomerID 为空的记录"""
-        df = clean_data(sample_ods_data.copy())
+        df, _ = clean_data(sample_ods_data.copy())
         assert df["customer_id"].isna().sum() == 0
 
     def test_removes_non_positive_quantity(self, sample_ods_data):
         """测试去除 Quantity ≤ 0 的记录"""
-        df = clean_data(sample_ods_data.copy())
+        df, _ = clean_data(sample_ods_data.copy())
         assert (df["quantity"] <= 0).sum() == 0
 
     def test_removes_non_positive_price(self, sample_ods_data):
         """测试去除 UnitPrice ≤ 0 的记录"""
-        df = clean_data(sample_ods_data.copy())
+        df, _ = clean_data(sample_ods_data.copy())
         assert (df["unit_price"] <= 0).sum() == 0
 
     def test_calculates_order_amount(self, sample_ods_data):
         """测试订单金额计算"""
-        df = clean_data(sample_ods_data.copy())
+        df, _ = clean_data(sample_ods_data.copy())
         assert "order_amount" in df.columns
         for _, row in df.iterrows():
             assert row["order_amount"] == row["quantity"] * row["unit_price"]
 
     def test_adds_etl_time(self, sample_ods_data):
         """测试 ETL 时间戳添加"""
-        df = clean_data(sample_ods_data.copy())
+        df, _ = clean_data(sample_ods_data.copy())
         assert "etl_time" in df.columns
         assert df["etl_time"].notna().all()
 
@@ -88,5 +88,20 @@ class TestCleanData:
                 "country": ["UK", "UK"],
             }
         )
-        df = clean_data(bad_data)
+        df, _ = clean_data(bad_data)
         assert len(df) == 0
+
+    def test_rejected_df_has_reason_column(self, sample_ods_data):
+        """脏数据归档包含 rejected_reason 列"""
+        _, rejected = clean_data(sample_ods_data.copy())
+        # C-INV003(取消) + INV005(null cust先捕获) + INV004(qty=-1) + INV006(price=0) = 4 行
+        # 注意: INV005 同时有 null customer_id 和 qty=0，但 null cust 先匹配，只记录一次
+        assert "rejected_reason" in rejected.columns
+        assert len(rejected) == 4
+
+    def test_rejected_df_contains_cancelled(self, sample_ods_data):
+        """取消订单被归档且原因正确"""
+        _, rejected = clean_data(sample_ods_data.copy())
+        cancelled = rejected[rejected["rejected_reason"] == "取消订单 (InvoiceNo以C开头)"]
+        assert len(cancelled) == 1
+        assert cancelled.iloc[0]["invoice_no"] == "C-INV003"
