@@ -1,5 +1,11 @@
 <a id="top"></a>
 
+<div align="right">
+
+[🇨🇳 简体中文](README_zh.md)
+
+</div>
+
 <!-- PROJECT SHIELDS -->
 <div align="center">
 
