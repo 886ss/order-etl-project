@@ -1,14 +1,24 @@
 """
 数据抽取模块 (Extract)
 ======================
-Step 1: 从 CSV 文件读取订单数据，写入 ODS 层。
+Step 1: 从 CSV 文件读取数据，写入 ODS 层。
+
+双模式:
+  - run_extract():    YAML schema 驱动（UCI 兼容，向后兼容）
+  - auto_extract():   自动推断 schema（任意 CSV，零配置）
 """
 
 import os
 import logging
 import pandas as pd
 from datetime import datetime
-from etl.db import get_engine, text, ODS_DTYPE, truncate_and_load, append_to_table, upsert_incremental
+from etl.db import get_engine, text, ODS_DTYPE, truncate_and_load, append_to_table, upsert_incremental, dynamic_load
+from etl.sanitizer import read_csv_safe
+from etl.profiler import profile_dataframe, infer_and_clean_dates
+from etl.config import (
+    RuntimeSchema, load_yaml_schema, yaml_to_runtime_schema,
+    merge_schemas, save_cache,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,9 +169,76 @@ def run_extract(file_path: str, incremental: bool = False, since_date: str = Non
         }
 
 
+def auto_extract(file_path: str, schema_yaml: str = None) -> dict:
+    """
+    Step 1 自动模式入口：任意 CSV → ODS（零配置）
+
+    流程:
+      1. sanitizer 修复文件结构 → DataFrame
+      2. profiler 推断列角色 → RuntimeSchema
+      3. (可选) YAML schema 覆盖推断结果
+      4. 日期列统一转换
+      5. 动态建表 + 写入 ODS
+
+    Args:
+        file_path: 任意 CSV 文件路径
+        schema_yaml: 可选的 YAML schema 覆盖文件路径
+
+    Returns:
+        执行结果摘要 (兼容 run_extract 返回格式)
+    """
+    start = datetime.now()
+    try:
+        # --- S 层: 文件修复 + 读取 ---
+        yaml_raw = load_yaml_schema(schema_yaml)
+        yaml_schema = yaml_to_runtime_schema(yaml_raw) if yaml_raw else RuntimeSchema()
+
+        dtype_overrides = yaml_schema.csv_dtype_overrides or None
+        df = read_csv_safe(file_path, dtype_overrides=dtype_overrides)
+        logger.info("S层读取: %d 行 × %d 列", len(df), len(df.columns))
+
+        # --- P 层: 列推断 ---
+        inferred = profile_dataframe(df)
+        schema = merge_schemas(yaml_schema, inferred)
+
+        # --- 日期列统一转换 ---
+        df = infer_and_clean_dates(df, schema.date_columns)
+
+        # --- 加载到 ODS ---
+        row_count = dynamic_load("ods_orders", df)
+
+        # 缓存推断结果
+        save_cache(schema)
+
+        return {
+            "task": "auto_extract",
+            "status": "success",
+            "rows": row_count,
+            "columns": len(df.columns),
+            "schema": {
+                "date_columns": schema.date_columns,
+                "numeric_columns": schema.numeric_columns,
+                "categorical_columns": schema.categorical_columns,
+                "id_columns": schema.id_columns,
+                "bool_columns": schema.bool_columns,
+            },
+            "duration": (datetime.now() - start).total_seconds(),
+        }
+    except Exception as e:
+        logger.error("auto_extract 失败: %s", e, exc_info=True)
+        return {
+            "task": "auto_extract",
+            "status": "failed",
+            "error": str(e),
+            "duration": (datetime.now() - start).total_seconds(),
+        }
+
+
+
 if __name__ == "__main__":
     import sys
 
     data_path = sys.argv[1] if len(sys.argv) > 1 else "data/online_retail.csv"
-    result = run_extract(data_path)
+    # 优先尝试自动模式
+    result = auto_extract(data_path)
     print(result)

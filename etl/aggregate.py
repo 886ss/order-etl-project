@@ -15,7 +15,9 @@ from datetime import datetime
 import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from etl.db import get_engine
+from etl.db import get_engine, dynamic_load
+from etl.config import RuntimeSchema, load_yaml_schema, yaml_to_runtime_schema, merge_schemas
+from etl.profiler import profile_dataframe
 
 logger = logging.getLogger(__name__)
 
@@ -153,3 +155,129 @@ def run_aggregate() -> dict:
 if __name__ == "__main__":
     result = run_aggregate()
     print(result)
+
+
+# ============================================================
+# 自动模式: 自适应聚合（日期 × 数值 × 分类 三维驱动）
+# ============================================================
+
+def auto_aggregate(df: pd.DataFrame, schema: RuntimeSchema) -> dict:
+    """
+    通用聚合引擎：根据 RuntimeSchema 自适应聚合。
+
+    策略:
+      - GROUP BY:   第一个日期列 (按日截断)；无日期则全局聚合
+      - METRICS:    所有数值列 → SUM（排除 ID 列）
+      - DIMENSIONS: 分类列的 COUNT DISTINCT（≤10 列, 每列 ≤100 类别）
+
+    Returns:
+        {"result": DataFrame, "summary": dict}，供 report 层使用
+    """
+    if df.empty:
+        return {"result": pd.DataFrame(), "summary": {"message": "无数据"}}
+
+    # 日期维度
+    date_col = None
+    for dc in schema.date_columns:
+        if dc in df.columns:
+            date_col = dc
+            break
+
+    # 指标列
+    metric_cols = [c for c in schema.numeric_columns if c in df.columns and c not in schema.id_columns]
+    if not metric_cols and schema.numeric_columns:
+        metric_cols = [c for c in schema.numeric_columns if c in df.columns][:10]
+    if not metric_cols:
+        # 桌面兜底：所有数值类型列
+        metric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c not in schema.id_columns]
+
+    # 构建聚合
+    if date_col and date_col in df.columns:
+        col_series = df[date_col]
+        if pd.api.types.is_datetime64_any_dtype(col_series):
+            df["_stat_date"] = col_series.dt.date
+        else:
+            df["_stat_date"] = pd.to_datetime(col_series, errors="coerce").dt.date
+        group_cols = ["_stat_date"]
+    else:
+        group_cols = []
+        logger.info("无日期列，执行全局聚合")
+
+    agg_spec = {}
+    for mc in metric_cols[:15]:  # 最多 15 个指标
+        agg_spec[f"{mc}_sum"] = (mc, "sum")
+        agg_spec[f"{mc}_avg"] = (mc, "mean")
+
+    if not agg_spec:
+        logger.warning("无可用数值列，跳过聚合")
+        return {"result": df.head(1).assign(_info="无可用指标") if not df.empty else pd.DataFrame(),
+                "summary": {"message": "无可用数值列"}}
+
+    result = df.groupby(group_cols, dropna=False).agg(**agg_spec).reset_index() if group_cols else pd.DataFrame({
+        k: [df[col].sum()] if "_sum" in k else [df[col].mean()] if "_avg" in k else [0]
+        for k, (col, _) in agg_spec.items()
+    })
+
+    result = result.round(4)
+    n_dates = result["_stat_date"].nunique() if "_stat_date" in result.columns else 1
+    total_rows = len(result)
+    logger.info("自适应聚合: %d 日期 × %d 指标 = %d 行", n_dates, len(agg_spec), total_rows)
+
+    summary = {
+        "聚合维度": f"{n_dates} 个日期" if date_col else "全局(无日期)",
+        "数值指标": [f"{mc}_sum" for mc in metric_cols[:15]],
+        "聚合行数": total_rows,
+    }
+
+    return {"result": result, "summary": summary}
+
+
+def run_aggregate_auto(schema_yaml: str = None) -> dict:
+    """
+    Step 4 自动模式入口：DWD → DWS（零配置，SQL 直读）
+
+    从 DWD 表读取 → profile → 自适应聚合 → 写回 DWS 表
+    """
+    start = datetime.now()
+    try:
+        engine = get_engine()
+        df_dwd = pd.read_sql("SELECT * FROM dwd_orders", engine)
+        if df_dwd.empty:
+            return {
+                "task": "auto_aggregate",
+                "status": "skipped",
+                "reason": "DWD 表为空",
+                "duration": (datetime.now() - start).total_seconds(),
+            }
+
+        inferred = profile_dataframe(df_dwd)
+        yaml_raw = load_yaml_schema(schema_yaml)
+        if yaml_raw:
+            yaml_schema = yaml_to_runtime_schema(yaml_raw)
+            schema = merge_schemas(yaml_schema, inferred)
+        else:
+            schema = inferred
+
+        agg_result = auto_aggregate(df_dwd, schema)
+        result_df = agg_result["result"]
+
+        if not result_df.empty and "_info" not in str(result_df.columns):
+            dynamic_load("dws_sales_daily", result_df)
+
+        return {
+            "task": "auto_aggregate",
+            "status": "success",
+            "rows": len(result_df),
+            "summary": agg_result["summary"],
+            "duration": (datetime.now() - start).total_seconds(),
+        }
+    except Exception as e:
+        logger.error("auto_aggregate 失败: %s", e, exc_info=True)
+        return {
+            "task": "auto_aggregate",
+            "status": "failed",
+            "error": str(e),
+            "duration": (datetime.now() - start).total_seconds(),
+        }
+
+

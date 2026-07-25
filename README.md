@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791)
 ![Airflow](https://img.shields.io/badge/Airflow-2.5+-017CEE)
-![Tests](https://img.shields.io/badge/tests-36/36_passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-86/86_passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -15,6 +15,44 @@
 基于 **Apache Airflow + PostgreSQL + Pandas** 构建的订单数据离线 ETL 流水线。采用经典 **ODS → DWD → DWS** 数仓分层架构，覆盖从数据抽取、质量检查、清洗转换、指标聚合到日报生成的完整链路。
 
 **数据来源**：[UCI Online Retail Dataset](https://archive.ics.uci.edu/dataset/352/online+retail)（~54 万行英国电商交易记录）
+
+### 🚀 v2.0 重大更新：结构驱动通用 ETL 引擎
+
+**任意 CSV 丢进去，全链路自动跑通。零配置，零硬编码。**
+
+| 特性 | v1.0 | v2.0 |
+|------|------|------|
+| Schema 灵活性 | 硬编码 8 列 UCI 列名 | 自动推断 + YAML 覆盖 |
+| 数据类型容错 | int64 列 `.str` 直接崩溃 | Lazy astype(str) 防御 |
+| 取消/退货检测 | `InvoiceNo` 以 C 开头（仅 UCI） | 可配置规则引擎 |
+| 金额计算 | 固定 `quantity × unit_price` | 可配置表达式 |
+| 聚合策略 | 固定 4 指标（销售额/订单数/客户数/客单价） | 自适应：日期×数值×分类 三维驱动 |
+| 换数据集成本 | 改 5+ 源文件 | 改 1 个 YAML 文件（或不改，全自动） |
+
+**核心架构 — 六层管道:**
+
+```
+whatever.csv → S(文件修复) → P(列推断) → Q(质量扫描) → T(通用清洗) → A(自适应聚合) → R(多格式报告)
+```
+
+| 层 | 模块 | 职责 |
+|----|------|------|
+| **S**anitizer | `etl/sanitizer.py` | 编码/分隔符/BOM/表头修复（8 项检测） |
+| **P**rofiler | `etl/profiler.py` | date/numeric/categorical/id/bool 列角色推断（11 项检测） |
+| **Q**uality | `etl/quality.py` | 空值/重复/离群值/哨兵值/时效性检查 |
+| **T**ransform | `etl/transform.py` | `clean_data_auto()` — 通用清洗引擎 |
+| **A**ggregate | `etl/aggregate.py` | `auto_aggregate()` — 自适应日度聚合 |
+| **R**eport | `etl/report.py` | `auto_report()` — CSV + JSON 双格式 |
+
+**无需配置即可运行:**
+
+```bash
+# 旧方式（UCI 专用）
+python etl/extract.py data/online_retail.csv
+
+# 新方式（任意 CSV）
+python -c "from etl.extract import auto_extract; print(auto_extract('任意文件.csv'))"
+```
 
 ---
 
@@ -103,6 +141,8 @@ online_retail.csv ──extract──► ods_orders (ODS)
 
 ### DWD 层 — `dwd_orders`
 
+**v1.0（UCI 硬编码）**:
+
 | 处理步骤 | 说明 |
 |----------|------|
 | 过滤取消订单 | `InvoiceNo` 以 'C' 开头标记为取消/退货 |
@@ -111,6 +151,16 @@ online_retail.csv ──extract──► ods_orders (ODS)
 | 异常单价 | 剔除 `UnitPrice ≤ 0` 的行 |
 | 金额计算 | `order_amount = Quantity × UnitPrice`，显式 NUMERIC(12,4) |
 | 时间戳 | 添加 `etl_time` 记录 ETL 处理时间 |
+
+**v2.0（通用规则引擎 `clean_data_auto()`）**:
+
+| 规则类型 | 配置方式 | 示例 |
+|----------|---------|------|
+| 取消/退货检测 | `schema.cancel_rules[]` — method/column/value 可配置 | `{column: invoice_no, method: string_startswith, value: "C"}` |
+| 必填列过滤 | `schema.required_columns[]` | `{column: customer_id, reason: "CustomerID 为空"}` |
+| 值域校验 | `schema.validations[]` — gt/gte/lt/lte/eq/neq | `{column: quantity, operator: gt, value: 0}` |
+| 计算列 | `schema.computed_columns[]` — pandas eval 表达式 | `quantity * unit_price` |
+| BUG-002 防御 | `astype(str)` 仅在 `.str` 操作前 lazy 转换 | int64 列不再崩溃 |
 
 ### DWS 层 — `dws_sales_daily`
 
@@ -346,15 +396,18 @@ pytest tests/ -v
 ```
 order-etl-project/
 ├── etl/                            # ETL 核心模块
-│   ├── db.py                       # 引擎单例 + 连接池 + ODS_DTYPE/DWD_DTYPE/REJECTED_DTYPE + truncate_and_load() / append_to_table() / upsert_incremental()
-│   ├── extract.py                  # Step1: CSV → ODS（多编码自适应，全量/增量双模式）
-│   ├── quality.py                  # Step2: 空值/重复/异常金额检查 + 非关键字段空值率阈值预警（默认30%）
-│   ├── transform.py                # Step3: ODS → DWD（清洗 + 脏数据归档 + 金额计算，全量/增量双模式）
-│   ├── aggregate.py                # Step4: DWD → DWS（批量 UPSERT + 缓存的表定义）
-│   ├── report.py                   # Step5: 日报 CSV 生成
-│   ├── logging_utils.py            # 任务执行日志表记录（安全字符串截断）
-│   ├── notify.py                   # 多通道告警（企业微信/飞书/SMTP 邮件，策略模式 + env 按需注册）
-│   └── download_data.py            # UCI 数据集下载（urlopen + csv/xlsx 双支持）
+│   ├── config.py                   # [NEW] RuntimeSchema 数据类 + YAML 加载 + JSON 缓存
+│   ├── sanitizer.py                # [NEW] S 层：文件结构修复（8 项检测）
+│   ├── profiler.py                 # [NEW] P 层：列角色推断（11 项检测）
+│   ├── db.py                       # 引擎单例 + 连接池 + 共享类型 + dynamic_load()
+│   ├── extract.py                  # Step1: CSV → ODS（全量/增量 + auto_extract()）
+│   ├── quality.py                  # Step2: 空值/重复/异常金额检查 + 空值率阈值预警
+│   ├── transform.py                # Step3: ODS → DWD（clean_data + clean_data_auto）
+│   ├── aggregate.py                # Step4: DWD → DWS（批量 UPSERT + auto_aggregate）
+│   ├── report.py                   # Step5: 日报 CSV + auto_report() CSV+JSON
+│   ├── logging_utils.py            # 任务执行日志表记录
+│   ├── notify.py                   # 多通道告警（企业微信/飞书/SMTP 邮件）
+│   └── schema.yaml                 # [NEW] UCI 数据集默认 schema 配置
 ├── dags/
 │   └── daily_order_pipeline.py     # Airflow DAG（全量/增量双模式 + on_failure_callback 自动告警 + tz-aware）
 ├── sql/
@@ -388,6 +441,14 @@ order-etl-project/
 
 ## ✨ 项目亮点
 
+### v2.0 新特性
+
+1. **结构驱动通用 ETL**：S→P→Q→T→A→R 六层管道，零行业假设，任意 CSV 全链路自动运行
+2. **智能列推断**：基于 dtype + 统计特征 + 列名模式 三重匹配，自动识别 date/numeric/categorical/id/bool
+3. **通用清洗引擎**：取消/退货/必填/值域/计算列全部配置驱动，`clean_data_auto()` 零硬编码
+4. **自适应聚合**：日期列→时间维度，数值列→KPI (SUM+AVG)，分类列→COUNT DISTINCT，ID 列自动排除
+5. **YAML 驱动配置**：`etl/schema.yaml` + `data/schema_2026.yaml` 证明"换数据集只改 YAML"
+
 ### 架构设计
 
 1. **数仓分层**：ODS → DWD → DWS 三层解耦，每层职责单一、可独立测试
@@ -404,7 +465,7 @@ order-etl-project/
 
 1. **数据质量检查**：4 维度 SQL 检查（空值/重复/异常金额/空值率），`CASE WHEN` 语法兼容 PostgreSQL + SQLite
 2. **空值率阈值预警**：非关键字段空值率超过阈值（默认 30%）写入 warning 日志，不中断管线，兼顾日报产出与数据质量追溯
-3. **36 项单元测试**：extract(4) + quality(7) + transform(9) + aggregate(3) + report(4) + db(4) + notify(5)，SQLite 内存库秒级验证
+3. **86 项单元测试**：extract(4) + quality(7) + transform(9) + aggregate(3) + report(4) + db(4) + notify(5) + config(9) + profiler(29) + e2e(12)，SQLite 内存库秒级验证
 4. **数据库层防御**：DWD `customer_id NOT NULL` 约束 + 4 个查询索引 + 上游空表自动检测（skipped 状态，不静默 pass）
 
 ### 工程实践

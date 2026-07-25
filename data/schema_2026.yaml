@@ -1,0 +1,92 @@
+# ============================================================
+# E-Commerce Orders Dataset 2026 | SCRA - Schema 配置
+# ============================================================
+# 证明：换数据集只需改这一个 YAML 文件，ETL 源码零修改。
+
+dataset:
+  name: "E-Commerce Orders Dataset 2026 | SCRA"
+  description: "Global e-commerce transactions (2023-2026), 30K rows × 41 columns"
+
+# ---- 1. CSV 读取选项 ----
+csv_read:
+  encodings: ["utf-8"]                              # 标准 UTF-8，无需多编码回落
+  dtype_overrides:                                   # 注意：Order_ID 是 int64，但内部期望 str
+    Order_ID: str                                    # 强制读为 str 防止 .str crash
+    Product_ID: str
+    Customer_ID: str
+
+# ---- 2. 列映射: CSV列名 → ETL内部列名 ----
+# 与 UCI 完全不同！但映射后内部列名一致，下游代码无感。
+source_column_mapping:
+  Order_ID: invoice_no
+  Product_ID: stock_code
+  Product_Category: description                     # 品类名替代商品描述
+  Quantity: quantity
+  Order_Date: invoice_date                          # 日期列名不同
+  Unit_Price: unit_price                            # 注意：Unit_Price vs UnitPrice
+  Customer_ID: customer_id                          # 注意：Customer_ID vs CustomerID
+  Country: country
+
+# ---- 3. 数据库列类型 (与UCI相同——都映射到内部统一类型) ----
+column_dtypes:
+  invoice_no:   { type: String, length: 50 }
+  stock_code:   { type: String, length: 50 }
+  description:  { type: String }
+  quantity:     { type: Integer }
+  invoice_date: { type: DateTime }
+  unit_price:   { type: Numeric, precision: 10, scale: 4 }
+  customer_id:  { type: String, length: 50 }
+  country:      { type: String, length: 100 }
+
+dwd_extra_dtypes:
+  order_amount: { type: Numeric, precision: 12, scale: 4 }
+  etl_time:     { type: DateTime }
+
+rejected_extra_dtypes:
+  rejected_reason: { type: String, length: 200 }
+  rejected_at:     { type: DateTime }
+
+# ---- 4. 清洗规则 ----
+cleaning:
+  # 新数据集无 "InvoiceNo以C开头" 的取消模式。
+  # 取消/退货/退款由 Returned 列（Yes/No）和 Order_Status 列标识。
+  # 但当前 8 列映射不保留这两列，因此 cancel_rules 置空。
+  # 如需过滤退货，可在映射中添加 Returned 列，然后在此配置规则。
+  cancel_rules: []
+
+  required_columns:
+    - column: customer_id
+      reason: "CustomerID 为空"
+
+  validations:
+    - column: quantity
+      operator: gt
+      value: 0
+      reason: "Quantity ≤ 0"
+    - column: unit_price
+      operator: gt
+      value: 0
+      reason: "UnitPrice ≤ 0"
+
+  computed_columns:
+    - name: order_amount
+      expression: "quantity * unit_price"
+      # 注: 真实公式应为 quantity*unit_price - discount_amount + shipping_cost + tax_amount
+      # 但 ETL 内部 schema 不包含这些列。如需精确金额，扩展 column_mapping 加入:
+      #   Discount_Amount: discount_amount
+      #   Shipping_Cost: shipping_cost
+      #   Tax_Amount: tax_amount
+      # 然后改为: quantity*unit_price - discount_amount + shipping_cost + tax_amount
+
+# ---- 5. 质量检查 ----
+quality:
+  critical_null_columns:
+    - invoice_no
+    - quantity
+    - invoice_date
+    - unit_price
+  null_rate_columns:
+    - description
+    - stock_code
+    - country
+  null_rate_threshold: 0.30

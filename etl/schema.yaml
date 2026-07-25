@@ -1,0 +1,92 @@
+# ============================================================
+# UCI Online Retail Dataset - 默认 Schema 配置
+# ============================================================
+# 此文件定义了 ETL 管道如何读取、映射、清洗和验证数据。
+# 更换数据集时，复制此文件并修改对应 section 即可，无需改源码。
+
+dataset:
+  name: "UCI Online Retail Dataset"
+  description: "UK-based online retail transactions (2010-2011)"
+
+# ---- 1. CSV 读取选项 ----
+csv_read:
+  encodings: ["utf-8", "cp1252", "latin-1"]        # 按顺序尝试的编码列表
+  dtype_overrides:                                   # 强制读为 str 的列（避免 int→str 崩溃）
+    InvoiceNo: str
+    StockCode: str
+    CustomerID: str
+
+# ---- 2. 列映射: CSV列名 → ETL内部列名 ----
+source_column_mapping:
+  InvoiceNo: invoice_no
+  StockCode: stock_code
+  Description: description
+  Quantity: quantity
+  InvoiceDate: invoice_date
+  UnitPrice: unit_price
+  CustomerID: customer_id
+  Country: country
+
+# ---- 3. 数据库列类型 (SQLAlchemy) ----
+column_dtypes:
+  invoice_no:   { type: String, length: 50 }
+  stock_code:   { type: String, length: 50 }
+  description:  { type: String }
+  quantity:     { type: Integer }
+  invoice_date: { type: DateTime }
+  unit_price:   { type: Numeric, precision: 10, scale: 4 }
+  customer_id:  { type: String, length: 50 }
+  country:      { type: String, length: 100 }
+
+# DWD 层额外列（在 ODS 基础上追加）
+dwd_extra_dtypes:
+  order_amount: { type: Numeric, precision: 12, scale: 4 }
+  etl_time:     { type: DateTime }
+
+# 脏数据归档表额外列
+rejected_extra_dtypes:
+  rejected_reason: { type: String, length: 200 }
+  rejected_at:     { type: DateTime }
+
+# ---- 4. 清洗规则 ----
+cleaning:
+  # 取消/退货订单检测规则（按顺序执行）
+  cancel_rules:
+    - column: invoice_no
+      method: string_startswith
+      value: "C"
+      reason: "取消订单 (InvoiceNo以C开头)"
+
+  # 必填列（值为空则剔除）
+  required_columns:
+    - column: customer_id
+      reason: "CustomerID 为空"
+
+  # 值域校验（不满足则剔除）
+  validations:
+    - column: quantity
+      operator: gt          # gt/gte/lt/lte/eq/neq
+      value: 0
+      reason: "Quantity ≤ 0"
+    - column: unit_price
+      operator: gt
+      value: 0
+      reason: "UnitPrice ≤ 0"
+
+  # 计算列（pandas eval 表达式，按顺序执行）
+  computed_columns:
+    - name: order_amount
+      expression: "quantity * unit_price"
+
+# ---- 5. 质量检查 ----
+quality:
+  critical_null_columns:    # 任一为空 → critical
+    - invoice_no
+    - quantity
+    - invoice_date
+    - unit_price
+  null_rate_columns:        # 空值率预警（不中断）
+    - description
+    - stock_code
+    - country
+  null_rate_threshold: 0.30

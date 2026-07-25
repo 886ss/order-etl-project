@@ -134,12 +134,18 @@ def truncate_and_load(table_name: str, df, dtype: dict) -> int:
     """
     engine = get_engine()
     with engine.begin() as conn:
-        # PostgreSQL: TRUNCATE 更快且重置自增序列
-        # SQLite/其他: DELETE FROM 兜底
         dialect_name = engine.dialect.name
         if dialect_name == "postgresql":
             conn.execute(text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY"))
         else:
             conn.execute(text(f"DELETE FROM {table_name}"))
         df.to_sql(table_name, conn, if_exists="append", index=False, dtype=dtype)
+    return len(df)
+
+
+def dynamic_load(table_name: str, df, mode: str = "replace") -> int:
+    """动态建表写入（无预定义 dtype）。auto_* 三步共用此函数。"""
+    engine = get_engine()
+    with engine.begin() as conn:
+        df.to_sql(table_name, conn, if_exists=mode, index=False)
     return len(df)

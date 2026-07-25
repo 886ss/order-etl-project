@@ -147,3 +147,51 @@ def run_report(output_dir: str = "reports") -> dict:
 if __name__ == "__main__":
     result = run_report()
     print(result)
+
+
+# ============================================================
+# 自动模式: 自适应报告
+# ============================================================
+
+def auto_report(df_agg: pd.DataFrame, summary: dict, output_dir: str = "reports") -> str:
+    """
+    通用报告生成：CSV + JSON 双格式输出。
+
+    Args:
+        df_agg:    聚合结果 DataFrame
+        summary:   摘要 dict
+        output_dir: 输出目录
+
+    Returns:
+        CSV 报告文件路径
+    """
+    import json
+
+    os.makedirs(output_dir, exist_ok=True)
+    today = datetime.now().strftime("%Y%m%d")
+
+    # CSV 报告
+    csv_path = os.path.join(output_dir, f"data_report_{today}.csv")
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write(f"# Data Report — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        for key, val in summary.items():
+            f.write(f"# {key}: {val}\n")
+        f.write("#\n")
+        df_agg.to_csv(f, index=False)
+    logger.info("CSV 报告: %s (%d 行)", csv_path, len(df_agg))
+
+    # JSON 摘要
+    json_path = os.path.join(output_dir, f"data_summary_{today}.json")
+    serializable = {}
+    for k, v in summary.items():
+        try:
+            json.dumps(v)
+            serializable[k] = v
+        except (TypeError, ValueError):
+            serializable[k] = str(v)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(serializable, f, indent=2, ensure_ascii=False)
+    logger.info("JSON 摘要: %s", json_path)
+
+    return csv_path
+
