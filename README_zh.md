@@ -33,7 +33,7 @@
 ## 📸 架构一览
 
 <div align="center">
-  <img src="docs/architecture.png" alt="ETL 架构图" width="700" />
+  <img src="docs/architecture_cn.png" alt="ETL 架构图" width="700" />
 </div>
 
 ```
@@ -293,6 +293,27 @@ pytest tests/ -v
 
 ### 生产部署
 将 DAG 文件中 `INCREMENTAL_MODE` 设 `True`。DWS 层使用 `INSERT ON CONFLICT DO UPDATE`，重跑安全幂等。
+
+---
+
+---
+
+## 📸 实际运行效果（2026 数据集 · 30K 行 × 41 列）
+
+<div align="center">
+  <img src="docs/profile_example.png" width="70%" alt="列推断结果" />
+  <p><em>列推断：41 列 → 日期1 / 数值17 / 分类18 / ID1 / 布尔4</em></p>
+</div>
+
+<div align="center">
+  <img src="docs/pipeline_summary.png" width="70%" alt="全链路结果" />
+  <p><em>全链路：S→P→Q→T→A→R 各步骤输出</em></p>
+</div>
+
+<div align="center">
+  <img src="docs/daily_trend.png" width="70%" alt="月度趋势" />
+  <p><em>月度聚合趋势（自动选择第一个 SUM 列作为分析指标）</em></p>
+</div>
 
 ---
 
