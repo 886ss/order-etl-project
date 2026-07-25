@@ -8,12 +8,18 @@
 避免重复创建连接池导致资源泄漏。
 """
 
+import logging
 import os
+import re
 from sqlalchemy import create_engine, text
 from sqlalchemy.types import Numeric, Integer, String, DateTime
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
 load_dotenv()
+
+# SQL 标识符白名单：仅允许字母/数字/下划线，阻断注入
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 DB_CONFIG = {
     "host": os.getenv("PG_HOST", "localhost"),
@@ -23,7 +29,16 @@ DB_CONFIG = {
     "password": os.getenv("PG_PASSWORD", "postgres"),
 }
 
+if not os.getenv("PG_PASSWORD"):
+    logger.warning("PG_PASSWORD 未设置，使用默认值——生产环境请务必修改")
+
 _engine = None
+
+
+def _validate_identifier(name: str, label: str = "identifier") -> None:
+    """校验 SQL 标识符合法性，阻断注入攻击。"""
+    if not _IDENTIFIER_RE.match(name):
+        raise ValueError(f"非法 {label}: {name!r}")
 
 
 def get_engine():
@@ -102,6 +117,8 @@ def upsert_incremental(table_name: str, df, dtype: dict, date_column: str) -> in
     Returns:
         写入行数
     """
+    _validate_identifier(table_name, "表名")
+    _validate_identifier(date_column, "列名")
     engine = get_engine()
     dates = df[date_column].drop_duplicates()
     min_date = dates.min()
@@ -132,6 +149,7 @@ def truncate_and_load(table_name: str, df, dtype: dict) -> int:
     Returns:
         写入行数
     """
+    _validate_identifier(table_name, "表名")
     engine = get_engine()
     with engine.begin() as conn:
         dialect_name = engine.dialect.name
@@ -145,6 +163,7 @@ def truncate_and_load(table_name: str, df, dtype: dict) -> int:
 
 def dynamic_load(table_name: str, df, mode: str = "replace") -> int:
     """动态建表写入（无预定义 dtype）。auto_* 三步共用此函数。"""
+    _validate_identifier(table_name, "表名")
     engine = get_engine()
     with engine.begin() as conn:
         df.to_sql(table_name, conn, if_exists=mode, index=False)

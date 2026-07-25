@@ -54,7 +54,7 @@ def profile_dataframe(df: pd.DataFrame, sample_size: int = 5000) -> RuntimeSchem
         logger.warning("空 DataFrame，返回默认 schema")
         return RuntimeSchema()
 
-    sample = df.sample(min(total, sample_size), random_state=42) if total > sample_size else df
+    sample = df.sample(min(total, sample_size)) if total > sample_size else df
     if total > sample_size:
         logger.info("采样分析: %d / %d 行", sample_size, total)
 

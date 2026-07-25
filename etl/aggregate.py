@@ -12,6 +12,7 @@ Step 4: DWD → DWS，按日汇总销售主题指标。
 
 import logging
 from datetime import datetime
+import numpy as np
 import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -66,8 +67,10 @@ def aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     ).reset_index()
 
     # 客单价 = 销售额 / 订单数
-    daily["daily_avg_order_amount"] = (
-        daily["daily_sales_amount"] / daily["daily_order_count"]
+    daily["daily_avg_order_amount"] = np.where(
+        daily["daily_order_count"] > 0,
+        daily["daily_sales_amount"] / daily["daily_order_count"],
+        np.nan,
     )
 
     # 四舍五入保留 4 位小数
@@ -261,7 +264,7 @@ def run_aggregate_auto(schema_yaml: str = None) -> dict:
         agg_result = auto_aggregate(df_dwd, schema)
         result_df = agg_result["result"]
 
-        if not result_df.empty and "_info" not in str(result_df.columns):
+        if not result_df.empty and "_info" not in result_df.columns:
             dynamic_load("dws_sales_daily", result_df)
 
         return {

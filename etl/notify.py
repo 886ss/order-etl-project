@@ -117,7 +117,11 @@ def _send_feishu(title: str, content: str) -> None:
 def _send_email(title: str, content: str) -> None:
     """SMTP 邮件"""
     smtp_host = os.getenv("SMTP_HOST", "")
-    smtp_port = int(os.getenv("SMTP_PORT", "465"))
+    try:
+        smtp_port = int(os.getenv("SMTP_PORT", "465"))
+    except (ValueError, TypeError):
+        smtp_port = 465
+    smtp_timeout = int(os.getenv("SMTP_TIMEOUT", "15"))
     smtp_user = os.getenv("SMTP_USER", "")
     smtp_password = os.getenv("SMTP_PASSWORD", "")
     smtp_to = os.getenv("SMTP_TO", "")
@@ -131,11 +135,11 @@ def _send_email(title: str, content: str) -> None:
     msg["To"] = smtp_to
 
     if smtp_port == 465:
-        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15) as server:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=smtp_timeout) as server:
             server.login(smtp_user, smtp_password)
             server.sendmail(smtp_user, smtp_to, msg.as_string())
     else:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=smtp_timeout) as server:
             server.starttls()
             server.login(smtp_user, smtp_password)
             server.sendmail(smtp_user, smtp_to, msg.as_string())
@@ -153,8 +157,13 @@ def _post_json(url: str, payload: dict) -> dict:
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json; charset=utf-8"}
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        safe_url = url.split("?")[0] if "?" in url else url
+        logger.error("Webhook 请求失败: %s — %s", safe_url, e)
+        raise
 
 
 # ============================================================

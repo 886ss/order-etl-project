@@ -20,6 +20,7 @@ import csv
 import logging
 import os
 import re
+import tempfile
 from io import StringIO
 
 import pandas as pd
@@ -71,7 +72,8 @@ def strip_bom(filepath: str) -> str | None:
     for bom_bytes, name in _BOM.items():
         if head.startswith(bom_bytes):
             logger.info("检测到 BOM: %s，自动剥离", name)
-            tmp = filepath + ".nobom"
+            tmp_fd, tmp = tempfile.mkstemp(prefix="nobom_", suffix=".csv")
+            os.close(tmp_fd)
             with open(filepath, "rb") as src, open(tmp, "wb") as dst:
                 src.read(len(bom_bytes))
                 dst.write(src.read())

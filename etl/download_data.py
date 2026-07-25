@@ -42,8 +42,15 @@ def download_dataset():
         logger.info("下载完成: %s", zip_path)
 
         # 解压并查找数据文件（优先 .xlsx，其次 .csv）
+        # Zip Slip 防护：逐文件校验路径不越界
+        output_real = os.path.realpath(OUTPUT_DIR)
         with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(OUTPUT_DIR)
+            for member in zf.infolist():
+                dest = os.path.realpath(os.path.join(OUTPUT_DIR, member.filename))
+                if not dest.startswith(output_real + os.sep):
+                    logger.warning("Zip Slip 跳过: %s", member.filename)
+                    continue
+                zf.extract(member, OUTPUT_DIR)
         logger.info("解压完成: %s", OUTPUT_DIR)
 
         # 查找并转换数据文件
@@ -68,7 +75,7 @@ def download_dataset():
 
         logger.info("数据集就绪！")
 
-    except Exception as e:
+    except (OSError, zipfile.BadZipFile, ValueError) as e:
         logger.error("下载失败: %s", e)
         logger.info("请手动下载数据集：")
         logger.info("1. 访问 https://archive.ics.uci.edu/dataset/352/online+retail")

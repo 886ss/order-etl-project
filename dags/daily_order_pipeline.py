@@ -57,6 +57,19 @@ except ImportError as e:
 # ============================================================
 # DAG 默认配置
 # ============================================================
+def _on_task_failure(context: dict) -> None:
+    """Airflow 失败回调（具名函数，支持序列化 DAG）。"""
+    send_alert(
+        f"ETL 失败: {context['task_instance'].task_id}",
+        (
+            f"DAG: {context['dag'].dag_id}\n"
+            f"执行时间: {context.get('execution_date', 'N/A')}\n"
+            f"任务: {context['task_instance'].task_id}\n"
+            f"错误: {context.get('exception', 'unknown')}"
+        ),
+    )
+
+
 default_args = {
     "owner": "data-team",
     "depends_on_past": False,
@@ -64,15 +77,7 @@ default_args = {
     "email_on_retry": False,
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
-    "on_failure_callback": lambda ctx: send_alert(
-        f"ETL 失败: {ctx['task_instance'].task_id}",
-        (
-            f"DAG: {ctx['dag'].dag_id}\n"
-            f"执行时间: {ctx.get('execution_date', 'N/A')}\n"
-            f"任务: {ctx['task_instance'].task_id}\n"
-            f"错误: {ctx.get('exception', 'unknown')}"
-        ),
-    ),
+    "on_failure_callback": _on_task_failure,
 }
 
 # ============================================================

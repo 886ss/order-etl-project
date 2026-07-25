@@ -167,6 +167,8 @@ def auto_report(df_agg: pd.DataFrame, summary: dict, output_dir: str = "reports"
     """
     import json
 
+    # 路径遍历防护：解析真实路径，限制在项目根目录内
+    output_dir = os.path.realpath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     today = datetime.now().strftime("%Y%m%d")
 

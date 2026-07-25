@@ -18,6 +18,8 @@ Step 3: ODS → DWD，完成数据清洗与明细加工。
 
 from datetime import datetime
 import logging
+import re
+
 import pandas as pd
 from etl.db import (
     get_engine, text, DWD_DTYPE, REJECTED_DTYPE,
@@ -27,6 +29,9 @@ from etl.config import RuntimeSchema, load_yaml_schema, yaml_to_runtime_schema, 
 from etl.profiler import profile_dataframe, infer_and_clean_dates
 
 logger = logging.getLogger(__name__)
+
+# 白名单：仅允许列名 + 数字 + 基本算术运算符，阻断 __import__ 等函数调用
+_ARITHMETIC_EXPR = re.compile(r"^[\w\s\d\.\+\-\*/\(\)]+$")
 
 
 def load_ods_data(engine, since_date: str = None) -> pd.DataFrame:
@@ -292,13 +297,14 @@ def clean_data_auto(df: pd.DataFrame, schema: RuntimeSchema) -> tuple[pd.DataFra
     else:
         rejected_parts = []
 
-    # 4. 计算列
+    # 4. 计算列（表达式白名单校验防 RCE）
     for comp in schema.computed_columns:
         name = comp["name"]
         expr = comp["expression"]
         try:
-            # 安全 eval：只允许基本算术
-            df[name] = df.eval(expr, engine="python")
+            if not _ARITHMETIC_EXPR.match(expr):
+                raise ValueError(f"表达式包含不安全字符，仅允许基本算术: {expr}")
+            df[name] = df.eval(expr)  # 默认引擎（numexpr 优先，纯算术沙箱）
             logger.info("计算列 [%s] = %s", name, expr)
         except Exception as e:
             logger.warning("计算列 [%s] 执行失败: %s", name, e)
